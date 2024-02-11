@@ -219,31 +219,37 @@ func Blake2bDigest(inputStr, salt string) (string, error) {
 	return hexEncoded, nil
 }
 
-// xorBytes computes the XOR of two byte slices.
-func xorBytes(a, b []byte) []byte {
-    n := len(a)
-    if len(b) > n {
-        n = len(b)
-    }
-    result := make([]byte, n)
-    for i := 0; i < n; i++ {
-        result[i] = a[i] ^ b[i]
-    }
-    return result
+
+// Assemble the shares together into a secret XORBytes
+func XORBytes(a, b []byte) ([]byte, error) {
+	if len(a) != len(b) {
+		return nil, fmt.Errorf("byte slices a and b must have the same length")
+	}
+	result := make([]byte, len(a))
+	for i := range a {
+		result[i] = a[i] ^ b[i]
+	}
+	return result, nil
 }
 
-// reconstructSecret reconstructs a secret given an array of hex-encoded shares.
-func reconstructSecret(shares []string) (string, error) {
-    var result []byte
-    for _, share := range shares {
-        shareBytes, err := hex.DecodeString(share)
-        if err != nil {
-            return "", err
-        }
-        if result == nil {
-            result = make([]byte, len(shareBytes))
-        }
-        result = xorBytes(result, shareBytes)
-    }
-    return hex.EncodeToString(result), nil
+// ReconstructSecret reconstructs the secret from two hex-encoded shares.
+func ReconstructSecret(share1, share2 string) (string, error) {
+	// Decode the hex-encoded shares to bytes.
+	bytesShare1, err := hex.DecodeString(share1)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode share1: %w", err)
+	}
+	bytesShare2, err := hex.DecodeString(share2)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode share2: %w", err)
+	}
+
+	// XOR the byte slices to reconstruct the secret.
+	reconstructedSecret, err := XORBytes(bytesShare1, bytesShare2)
+	if err != nil {
+		return "", fmt.Errorf("failed to XOR shares: %w", err)
+	}
+
+	// Encode the reconstructed secret back to a hex string.
+	return hex.EncodeToString(reconstructedSecret), nil
 }
