@@ -89,7 +89,7 @@ func printHeaders(headers http.Header) {
 	}
 }
 
-func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {
+func FetchPhaseUser(appToken, host string) (*http.Response, error) {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/tokens/", host)
     req, err := http.NewRequest("GET", url, nil)
@@ -113,7 +113,7 @@ func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {
     return resp, nil
 }
 
-func FetchAppKey(tokenType, appToken, host string) (string, error) {
+func FetchAppKey(appToken, host string) (string, error) {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/tokens/", host)
     req, err := http.NewRequest("GET", url, nil)
@@ -146,7 +146,7 @@ func FetchAppKey(tokenType, appToken, host string) (string, error) {
 }
 
 // FetchWrappedKeyShare fetches the wrapped application key share from Phase KMS.
-func FetchWrappedKeyShare(tokenType, appToken, host string) (string, error) {
+func FetchWrappedKeyShare(appToken, host string) (string, error) {
 	client := &http.Client{}
 
 	// Check if SSL verification should be skipped
@@ -191,7 +191,7 @@ func FetchWrappedKeyShare(tokenType, appToken, host string) (string, error) {
 	return wrappedKeyShare, nil
 }
 
-func FetchPhaseSecrets(tokenType, appToken, environmentID, host string) ([]map[string]interface{}, error) {
+func FetchPhaseSecrets(appToken, environmentID, host string) ([]map[string]interface{}, error) {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/", host)
     
@@ -222,7 +222,7 @@ func FetchPhaseSecrets(tokenType, appToken, environmentID, host string) ([]map[s
 }
 
 
-func CreatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map[string]interface{}, host string) error {
+func CreatePhaseSecrets(appToken, environmentID string, secrets []map[string]interface{}, host string) error {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/", host)
     data, err := json.Marshal(map[string][]map[string]interface{}{"secrets": secrets})
@@ -247,7 +247,7 @@ func CreatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
     return handleHTTPResponse(resp)
 }
 
-func UpdatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map[string]interface{}, host string) error {
+func UpdatePhaseSecrets(appToken, environmentID string, secrets []map[string]interface{}, host string) error {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/", host)
     data, err := json.Marshal(map[string][]map[string]interface{}{"secrets": secrets})
@@ -272,7 +272,7 @@ func UpdatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
     return handleHTTPResponse(resp)
 }
 
-func DeletePhaseSecrets(tokenType, appToken, environmentID string, secretIDs []string, host string) error {
+func DeletePhaseSecrets(appToken, environmentID string, secretIDs []string, host string) error {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/", host)
     data, err := json.Marshal(map[string][]string{"secrets": secretIDs})
