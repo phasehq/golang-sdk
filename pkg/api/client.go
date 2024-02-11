@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/user"
 	"runtime"
+	"strings"
 )
 
 var (
@@ -19,38 +20,38 @@ var (
     phaseDebug = os.Getenv("PHASE_DEBUG") == "true"
 )
 
-func ConstructHTTPHeaders(tokenType, appToken string) http.Header {
+func ConstructHTTPHeaders(appToken string) http.Header {
     headers := http.Header{}
-    headers.Set("Authorization", fmt.Sprintf("Bearer %s %s", tokenType, appToken))
+    // Adjusting to use "Bearer Service" as part of the token value
+    headers.Set("Authorization", fmt.Sprintf("Bearer Service %s", appToken))
     headers.Set("User-Agent", GetUserAgent())
     return headers
 }
 
+
 func GetUserAgent() string {
-	details := []string{}
+    details := []string{}
 
-	// Example CLI version, replace "v1.0.0" with your actual version retrieval method
-	cliVersion := "phase-golang-sdk/v1.0.0"
-	details = append(details, cliVersion)
+    cliVersion := "phase-golang-sdk/v1.0.0"
+    details = append(details, cliVersion)
 
-	osType := runtime.GOOS
-	osVersion := "" // Go does not directly provide OS version; consider using a third-party package if necessary
-	architecture := runtime.GOARCH
-	details = append(details, fmt.Sprintf("%s %s %s", osType, osVersion, architecture))
+    osType := runtime.GOOS
+    architecture := runtime.GOARCH
+    details = append(details, fmt.Sprintf("%s %s", osType, architecture))
 
-	// Get username and hostname
-	currentUser, err := user.Current()
-	if err == nil {
-		hostname, err := os.Hostname()
-		if err == nil {
-			userHostString := fmt.Sprintf("%s@%s", currentUser.Username, hostname)
-			details = append(details, userHostString)
-		}
-	}
+    currentUser, err := user.Current()
+    if err == nil {
+        hostname, err := os.Hostname()
+        if err == nil {
+            userHostString := fmt.Sprintf("%s@%s", currentUser.Username, hostname)
+            details = append(details, userHostString)
+        }
+    }
 
-	userAgentStr := fmt.Sprintf("User-Agent: %s", details)
-	return userAgentStr
+    // Return only the concatenated string without "User-Agent:" prefix
+    return strings.Join(details, " ")
 }
+
 
 func createHTTPClient() *http.Client {
     client := &http.Client{}
@@ -80,6 +81,14 @@ func handleHTTPResponse(resp *http.Response) error {
     return nil
 }
 
+func printHeaders(headers http.Header) {
+	for key, values := range headers {
+		for _, value := range values {
+			fmt.Printf("%s: %s\n", key, value)
+		}
+	}
+}
+
 func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/tokens/", host)
@@ -88,12 +97,13 @@ func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {
         return nil, err
     }
 
-    req.Header = ConstructHTTPHeaders(tokenType, appToken)
+    req.Header = ConstructHTTPHeaders(appToken)
     resp, err := client.Do(req)
     if err != nil {
         return nil, err
     }
-
+	//fmt.Print(req.Header)
+	printHeaders(req.Header)
     err = handleHTTPResponse(resp)
     if err != nil {
         resp.Body.Close() // Ensure response body is closed on error
@@ -111,7 +121,7 @@ func FetchAppKey(tokenType, appToken, host string) (string, error) {
         return "", err
     }
 
-    req.Header = ConstructHTTPHeaders(tokenType, appToken)
+    req.Header = ConstructHTTPHeaders(appToken)
     resp, err := client.Do(req)
     if err != nil {
         return "", err
@@ -152,7 +162,7 @@ func FetchWrappedKeyShare(tokenType, appToken, host string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	req.Header = ConstructHTTPHeaders(appToken)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -190,7 +200,7 @@ func FetchPhaseSecrets(tokenType, appToken, environmentID, host string) ([]map[s
         return nil, err
     }
 
-    req.Header = ConstructHTTPHeaders(tokenType, appToken)
+    req.Header = ConstructHTTPHeaders(appToken)
     req.Header.Set("Environment", environmentID)
 
     resp, err := client.Do(req)
@@ -225,7 +235,7 @@ func CreatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
         return err
     }
 
-    req.Header = ConstructHTTPHeaders(tokenType, appToken)
+    req.Header = ConstructHTTPHeaders(appToken)
     req.Header.Set("Environment", environmentID)
 
     resp, err := client.Do(req)
@@ -250,7 +260,7 @@ func UpdatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
         return err
     }
 
-    req.Header = ConstructHTTPHeaders(tokenType, appToken)
+    req.Header = ConstructHTTPHeaders(appToken)
     req.Header.Set("Environment", environmentID)
 
     resp, err := client.Do(req)
@@ -275,7 +285,7 @@ func DeletePhaseSecrets(tokenType, appToken, environmentID string, secretIDs []s
         return err
     }
 
-    req.Header = ConstructHTTPHeaders(tokenType, appToken)
+    req.Header = ConstructHTTPHeaders(appToken)
     req.Header.Set("Environment", environmentID)
 
     resp, err := client.Do(req)
