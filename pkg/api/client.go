@@ -81,13 +81,6 @@ func handleHTTPResponse(resp *http.Response) error {
     return nil
 }
 
-func printHeaders(headers http.Header) {
-	for key, values := range headers {
-		for _, value := range values {
-			fmt.Printf("%s: %s\n", key, value)
-		}
-	}
-}
 
 func FetchPhaseUser(appToken, host string) (*http.Response, error) {
     client := createHTTPClient()
@@ -102,8 +95,6 @@ func FetchPhaseUser(appToken, host string) (*http.Response, error) {
     if err != nil {
         return nil, err
     }
-	//fmt.Print(req.Header)
-	printHeaders(req.Header)
     err = handleHTTPResponse(resp)
     if err != nil {
         resp.Body.Close() // Ensure response body is closed on error
@@ -112,6 +103,31 @@ func FetchPhaseUser(appToken, host string) (*http.Response, error) {
 
     return resp, nil
 }
+
+type AppKeyResponse struct {
+    WrappedKeyShare string `json:"wrapped_key_share"`
+    Apps            []struct {
+        ID              string `json:"id"`
+        Name            string `json:"name"`
+        Encryption      string `json:"encryption"`
+        EnvironmentKeys []struct {
+            ID           string `json:"id"`
+            Environment  struct {
+                ID      string `json:"id"`
+                Name    string `json:"name"`
+                EnvType string `json:"env_type"`
+            } `json:"environment"`
+            IdentityKey string `json:"identity_key"`
+            WrappedSeed string `json:"wrapped_seed"`
+            WrappedSalt string `json:"wrapped_salt"`
+            CreatedAt   string `json:"created_at"`
+            UpdatedAt   string `json:"updated_at"`
+            DeletedAt   *string `json:"deleted_at"` // Use pointer to accommodate null
+            User        *string `json:"user"`       // Use pointer to accommodate null
+        } `json:"environment_keys"`
+    } `json:"apps"`
+}
+
 
 func FetchAppKey(appToken, host string) (string, error) {
     client := createHTTPClient()
@@ -132,17 +148,12 @@ func FetchAppKey(appToken, host string) (string, error) {
         return "", err
     }
 
-    var jsonResp map[string]string
+    var jsonResp AppKeyResponse
     if err := json.NewDecoder(resp.Body).Decode(&jsonResp); err != nil {
         return "", fmt.Errorf("failed to decode JSON: %v", err)
     }
 
-    wrappedKeyShare, ok := jsonResp["wrapped_key_share"]
-    if !ok {
-        return "", fmt.Errorf("wrapped key share not found in response")
-    }
-
-    return wrappedKeyShare, nil
+    return jsonResp.WrappedKeyShare, nil
 }
 
 // FetchWrappedKeyShare fetches the wrapped application key share from Phase KMS.
