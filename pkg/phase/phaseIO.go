@@ -150,79 +150,90 @@ func (p *Phase) PhaseGet(envName string, keys []string, appName string, tag stri
 	return decryptedSecrets, nil
 }
 
-// GetAllSecrets fetches and decrypts all secrets for a given environment and application.
-func (p *Phase) GetAllSecrets(envName, appName, tag string) ([]byte, error) {
-	// Fetch user data
-	resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
-	if err != nil {
-		log.Fatalf("Failed to fetch user data: %v", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
+func (p *Phase) GetAllSecrets(envName, appName, tag string) ([]map[string]interface{}, error) {
+    // Fetch user data
+    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to fetch user data: %v", err)
+        return nil, err
+    }
+    defer resp.Body.Close()
 
-	var userData AppKeyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		log.Fatalf("Failed to decode user data: %v", err)
-		return nil, err
-	}
+    var userData AppKeyResponse
+    if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+        log.Fatalf("Failed to decode user data: %v", err)
+        return nil, err
+    }
 
-	// Identify the correct environment and application
-	envKey, err := findEnvironmentKey(&userData, envName, appName)
-	if err != nil {
-		log.Fatalf("Failed to find environment key: %v", err)
-		return nil, err
-	}
+    // Identify the correct environment and application
+    envKey, err := findEnvironmentKey(&userData, envName, appName)
+    if err != nil {
+        log.Fatalf("Failed to find environment key: %v", err)
+        return nil, err
+    }
 
-	// Decrypt the wrapped seed
-	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed)
-	if err != nil {
-		log.Fatalf("Failed to decrypt wrapped seed: %v", err)
-		return nil, err
-	}
+    // Decrypt the wrapped seed
+    decryptedSeed, err := p.Decrypt(envKey.WrappedSeed)
+    if err != nil {
+        log.Fatalf("Failed to decrypt wrapped seed: %v", err)
+        return nil, err
+    }
 
-	// Generate environment key pair
-	publicKeyHex, privateKeyHex, err := generateEnvKeyPair(decryptedSeed)
-	if err != nil {
-		log.Fatalf("Failed to generate environment key pair: %v", err)
-		return nil, err
-	}
+    // Generate environment key pair
+    publicKeyHex, privateKeyHex, err := generateEnvKeyPair(decryptedSeed)
+    if err != nil {
+        log.Fatalf("Failed to generate environment key pair: %v", err)
+        return nil, err
+    }
 
-	// Fetch secrets
-	secrets, err := api.FetchPhaseSecrets(p.AppToken, envKey.Environment.ID, p.Host)
-	if err != nil {
-		log.Fatalf("Failed to fetch secrets: %v", err)
-		return nil, err
-	}
+    // Fetch secrets
+    secrets, err := api.FetchPhaseSecrets(p.AppToken, envKey.Environment.ID, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to fetch secrets: %v", err)
+        return nil, err
+    }
 
-	decryptedSecrets := make([]map[string]interface{}, 0)
-	for _, secret := range secrets {
+    decryptedSecrets := make([]map[string]interface{}, 0)
+    for _, secret := range secrets {
+        // Decrypt key, value, and optional comment
+        decryptedKey, decryptedValue, decryptedComment, err := decryptSecret(secret, privateKeyHex, publicKeyHex)
+        if err != nil {
+            log.Printf("Failed to decrypt secret: %v\n", err)
+            continue
+        }
 
-		// Decrypt key, value, and optional comment
-		decryptedKey, decryptedValue, decryptedComment, err := decryptSecret(secret, privateKeyHex, publicKeyHex)
-		if err != nil {
-			log.Printf("Failed to decrypt secret: %v\n", err)
-			continue
-		}
+        // Prepare tags for inclusion in result
+        var stringTags []string
+        if secretTags, ok := secret["tags"].([]interface{}); ok {
+            for _, tagInterface := range secretTags {
+                if tagStr, ok := tagInterface.(string); ok {
+                    stringTags = append(stringTags, tagStr)
+                }
+            }
 
-		// Append decrypted secret to result list
-		result := map[string]interface{}{
-			"key":     decryptedKey,
-			"value":   decryptedValue,
-			"comment": decryptedComment,
-		}
+            // Check for tag match if a tag is provided
+            if tag != "" && !tagMatches(stringTags, tag) {
+                continue
+            }
+        } else if tag != "" {
+            // If there are no tags but a tag filter is specified, skip this secret.
+            continue
+        }
 
-		decryptedSecrets = append(decryptedSecrets, result)
-	}
+        // Append decrypted secret to result list
+        result := map[string]interface{}{
+            "key":     decryptedKey,
+            "value":   decryptedValue,
+            "comment": decryptedComment,
+            "tags":    stringTags,
+        }
 
-	// Convert decryptedSecrets to JSON
-	decryptedSecretsJSON, err := json.Marshal(decryptedSecrets)
-	if err != nil {
-		log.Fatalf("Failed to marshal decrypted secrets into JSON: %v", err)
-		return nil, err
-	}
+        decryptedSecrets = append(decryptedSecrets, result)
+    }
 
-	return decryptedSecretsJSON, nil
+    return decryptedSecrets, nil
 }
+
 
 
 // decryptSecret decrypts a secret's key, value, and optional comment using asymmetric decryption.
