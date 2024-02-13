@@ -14,7 +14,6 @@ import (
 // Spin up an ephemeral X25519 keypair
 func RandomKeyPair() (sodium.KXKP, error) {
 	kp := sodium.MakeKXKP()
-	log.Println("Generated random key pair")
 	return kp, nil
 }
 
@@ -26,7 +25,6 @@ func ClientSessionKeys(kp sodium.KXKP, recipientPublicKey []byte) (*sodium.KXSes
 		log.Printf("Failed to generate client session keys: %v\n", err)
 		return nil, err
 	}
-	log.Println("Generated client session keys successfully")
 	return sessionKeys, nil
 }
 
@@ -38,7 +36,6 @@ func ServerSessionKeys(kp sodium.KXKP, clientPublicKey []byte) (*sodium.KXSessio
 		log.Printf("Failed to generate server session keys: %v\n", err)
 		return nil, err
 	}
-	log.Println("Generated server session keys successfully")
 	return sessionKeys, nil
 }
 
@@ -218,7 +215,6 @@ func Blake2bDigest(inputStr, salt string) (string, error) {
 	hexEncoded := hex.EncodeToString(hashed)
 	return hexEncoded, nil
 }
-
 
 // Assemble the shares together into a secret XORBytes
 func XORBytes(a, b []byte) ([]byte, error) {
