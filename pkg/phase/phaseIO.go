@@ -74,7 +74,7 @@ type AppKeyResponse struct {
 }
 
 
-func (p *Phase) PhaseGet(envName, appName, keyToFind, tag string) ([]map[string]interface{}, error) {
+func (p *Phase) PhaseGet(envName, appName, keyToFind, tag string) (*map[string]interface{}, error) {
     // Fetch user data
     resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
@@ -89,81 +89,73 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag string) ([]map[string]
         return nil, err
     }
 
-    // Identify the correct environment and application
     envKey, err := findEnvironmentKey(&userData, envName, appName)
     if err != nil {
         log.Printf("Failed to find environment key: %v", err)
         return nil, err
     }
 
-    // Decrypt the wrapped seed
     decryptedSeed, err := p.Decrypt(envKey.WrappedSeed)
     if err != nil {
         log.Printf("Failed to decrypt wrapped seed: %v", err)
         return nil, err
     }
+    decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
+    if err != nil {
+        log.Printf("Failed to decrypt wrapped salt: %v", err)
+        return nil, err
+    }
 
-    // Generate environment key pair
     publicKeyHex, privateKeyHex, err := generateEnvKeyPair(decryptedSeed)
     if err != nil {
         log.Printf("Failed to generate environment key pair: %v", err)
         return nil, err
     }
 
-    // Fetch secrets
-    secrets, err := api.FetchPhaseSecrets(p.AppToken, envKey.Environment.ID, p.Host)
+    keyDigest, err := crypto.Blake2bDigest(keyToFind, decryptedSalt)
     if err != nil {
-        log.Printf("Failed to fetch secrets: %v", err)
+        log.Printf("Failed to generate key digest: %v", err)
         return nil, err
     }
 
-    var foundSecrets []map[string]interface{}
-    keyFound := false
+    // Fetch a single secret based on keyDigest
+    secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest)
+    if err != nil {
+        log.Printf("Failed to fetch secret: %v", err)
+        return nil, err
+    }
 
-    for _, secret := range secrets {
-        decryptedKey, decryptedValue, decryptedComment, err := decryptSecret(secret, privateKeyHex, publicKeyHex)
-        if err != nil {
-            log.Printf("Failed to decrypt secret: %v\n", err)
-            continue
-        }
+    decryptedKey, decryptedValue, decryptedComment, err := decryptSecret(secret, privateKeyHex, publicKeyHex)
+    if err != nil {
+        log.Printf("Failed to decrypt secret: %v", err)
+        return nil, err
+    }
 
-        if decryptedKey == keyToFind {
-            keyFound = true
-
-            // Prepare tags for inclusion in result
-            var stringTags []string
-            if secretTags, ok := secret["tags"].([]interface{}); ok {
-                for _, tagInterface := range secretTags {
-                    if tagStr, ok := tagInterface.(string); ok {
-                        stringTags = append(stringTags, tagStr)
-                    }
-                }
-
-                // If a tag is provided, ensure it matches.
-                if tag != "" && !tagMatches(stringTags, tag) {
-                    continue
+    // Verify tag match if a tag is provided
+    var stringTags []string
+    if tag != "" {
+        if secretTags, ok := secret["tags"].([]interface{}); ok {
+            for _, tagInterface := range secretTags {
+                if tagStr, ok := tagInterface.(string); ok {
+                    stringTags = append(stringTags, tagStr)
                 }
             }
-
-            result := map[string]interface{}{
-                "key":     decryptedKey,
-                "value":   decryptedValue,
-                "comment": decryptedComment,
-                "tags":    stringTags,
+            if !tagMatches(stringTags, tag) {
+                log.Printf("Secret with key '%s' found, but doesn't match the provided tag '%s'.", keyToFind, tag)
+                return nil, fmt.Errorf("secret with key '%s' found, but doesn't match the provided tag '%s'", keyToFind, tag)
             }
-
-            foundSecrets = append(foundSecrets, result)
-            break
         }
     }
 
-    if !keyFound {
-        log.Printf("Secret with key '%s' not found or could not be decrypted.", keyToFind)
+    result := &map[string]interface{}{
+        "key":     decryptedKey,
+        "value":   decryptedValue,
+        "comment": decryptedComment,
+        "tags":    stringTags,
     }
 
-    return foundSecrets, nil
+    return result, nil
 }
-
 
 func (p *Phase) GetAllSecrets(envName, appName, tag string) ([]map[string]interface{}, error) {
     // Fetch user data
@@ -436,91 +428,86 @@ func (p *Phase) UpdateSecret(envName, key, value, appName string) error {
 	return nil
 }
 
-// DeleteSecrets deletes secrets in Phase KMS based on keys and environment.
-func (p *Phase) DeleteSecrets(envName string, keysToDelete []string, appName string) ([]string, error) {
-	// Fetch user data
-	resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
-	if err != nil {
-		log.Fatalf("Failed to fetch user data: %v", err)
-		return nil, err
-	}
-	defer resp.Body.Close()
 
-	var userData AppKeyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		log.Fatalf("Failed to decode user data: %v", err)
-		return nil, err
-	}
+// DeleteSecret deletes a secret in Phase KMS based on a key and environment.
+func (p *Phase) DeleteSecret(envName, keyToDelete, appName string) error {
+    // Fetch user data
+    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to fetch user data: %v", err)
+        return err
+    }
+    defer resp.Body.Close()
 
-	_, envID, publicKey, err := phaseGetContext(&userData, appName, envName)
-	if err != nil {
-		log.Fatalf("Failed to get context: %v", err)
-		return nil, err
-	}
+    var userData AppKeyResponse
+    if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+        log.Fatalf("Failed to decode user data: %v", err)
+        return err
+    }
 
-	secrets, err := api.FetchPhaseSecrets(p.AppToken, envID, p.Host)
-	if err != nil {
-		log.Fatalf("Failed to fetch secrets: %v", err)
-		return nil, err
-	}
+    _, envID, publicKey, err := phaseGetContext(&userData, appName, envName)
+    if err != nil {
+        log.Fatalf("Failed to get context: %v", err)
+        return err
+    }
 
-    // Identify the correct environment and application
+    secrets, err := api.FetchPhaseSecrets(p.AppToken, envID, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to fetch secrets: %v", err)
+        return err
+    }
+
     envKey, err := findEnvironmentKey(&userData, envName, appName)
     if err != nil {
         log.Printf("Failed to find environment key: %v", err)
-        return nil, err
+        return err
     }
-	
-	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed)
-	if err != nil {
-		log.Fatalf("Failed to decrypt wrapped seed: %v", err)
-		return nil, err
-	}
 
-	_, privateKeyHex, err := generateEnvKeyPair(decryptedSeed)
-	if err != nil {
-		log.Fatalf("Failed to generate environment key pair: %v", err)
-		return nil, err
-	}
+    decryptedSeed, err := p.Decrypt(envKey.WrappedSeed)
+    if err != nil {
+        log.Fatalf("Failed to decrypt wrapped seed: %v", err)
+        return err
+    }
 
-	var secretIDsToDelete []string
-	keysNotFound := make([]string, 0)
+    _, privateKeyHex, err := generateEnvKeyPair(decryptedSeed)
+    if err != nil {
+        log.Fatalf("Failed to generate environment key pair: %v", err)
+        return err
+    }
 
-	for _, key := range keysToDelete {
-		found := false
-		for _, secret := range secrets {
-			decryptedKey, _, _, err := decryptSecret(secret, privateKeyHex, publicKey)
-			if err != nil {
-				log.Printf("Failed to decrypt secret key: %v\n", err)
-				continue
-			}
+    var secretIDToDelete string
+    for _, secret := range secrets {
+        decryptedKey, _, _, err := decryptSecret(secret, privateKeyHex, publicKey)
+        if err != nil {
+            log.Printf("Failed to decrypt secret key: %v\n", err)
+            continue
+        }
 
-			if decryptedKey == key {
-				secretID, ok := secret["id"].(string)
-				if !ok {
-					log.Printf("Secret ID is not a string for key: %v", key)
-					continue
-				}
-				secretIDsToDelete = append(secretIDsToDelete, secretID)
-				found = true
-				break
-			}
-		}
+        if decryptedKey == keyToDelete {
+            secretID, ok := secret["id"].(string)
+            if !ok {
+                log.Printf("Secret ID is not a string for key: %v", keyToDelete)
+                continue
+            }
+            secretIDToDelete = secretID
+            break
+        }
+    }
 
-		if !found {
-			keysNotFound = append(keysNotFound, key)
-		}
-	}
+    if secretIDToDelete == "" {
+        log.Printf("Key '%s' doesn't exist.", keyToDelete)
+        return fmt.Errorf("key '%s' doesn't exist", keyToDelete)
+    }
 
-	if len(secretIDsToDelete) > 0 {
-		err = api.DeletePhaseSecrets(p.AppToken, envID, secretIDsToDelete, p.Host)
-		if err != nil {
-			log.Fatalf("Failed to delete secrets: %v", err)
-			return keysNotFound, err
-		}
-	}
+    // Perform the delete operation for the found secret ID
+    err = api.DeletePhaseSecrets(p.AppToken, envID, []string{secretIDToDelete}, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to delete secret: %v", err)
+        return err
+    }
 
-	return keysNotFound, nil
+    log.Println("Secret deleted successfully")
+    return nil
 }
 
 // decryptSecret decrypts a secret's key, value, and optional comment using asymmetric decryption.
