@@ -246,26 +246,26 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
 }
 
 // CreateSecrets creates new secrets in the Phase KMS for the specified environment and application.
-func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appName string) error {
-	// Fetch user data
-	resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
-	if err != nil {
-		log.Fatalf("Failed to fetch user data: %v", err)
-		return err
-	}
-	defer resp.Body.Close()
+func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appName string, keyPaths map[string]string) error {
+    // Fetch user data
+    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to fetch user data: %v", err)
+        return err
+    }
+    defer resp.Body.Close()
 
-	var userData AppKeyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		log.Fatalf("Failed to decode user data: %v", err)
-		return err
-	}
+    var userData AppKeyResponse
+    if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+        log.Fatalf("Failed to decode user data: %v", err)
+        return err
+    }
 
-	_, envID, publicKey, err := phaseGetContext(&userData, appName, envName)
-	if err != nil {
-		log.Fatalf("Failed to get context: %v", err)
-		return err
-	}
+    _, envID, publicKey, err := phaseGetContext(&userData, appName, envName)
+    if err != nil {
+        log.Fatalf("Failed to get context: %v", err)
+        return err
+    }
 
     // Identify the correct environment and application
     envKey, err := findEnvironmentKey(&userData, envName, appName)
@@ -274,191 +274,200 @@ func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appNam
         return err
     }
 
-	decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
-	if err != nil {
-		log.Fatalf("Failed to decrypt wrapped salt: %v", err)
-		return err
-	}
+    decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
+    if err != nil {
+        log.Fatalf("Failed to decrypt wrapped salt: %v", err)
+        return err
+    }
 
-	secrets := make([]map[string]interface{}, 0)
-	for _, pair := range keyValuePairs {
-		for key, value := range pair {
-			encryptedKey, err := crypto.EncryptAsymmetric(key, publicKey)
-			if err != nil {
-				log.Printf("Failed to encrypt key: %v\n", err)
-				continue
-			}
+    secrets := make([]map[string]interface{}, 0)
+    for _, pair := range keyValuePairs {
+        for key, value := range pair {
+            encryptedKey, err := crypto.EncryptAsymmetric(key, publicKey)
+            if err != nil {
+                log.Printf("Failed to encrypt key: %v\n", err)
+                continue
+            }
 
-			encryptedValue, err := crypto.EncryptAsymmetric(value, publicKey)
-			if err != nil {
-				log.Printf("Failed to encrypt value: %v\n", err)
-				continue
-			}
+            encryptedValue, err := crypto.EncryptAsymmetric(value, publicKey)
+            if err != nil {
+                log.Printf("Failed to encrypt value: %v\n", err)
+                continue
+            }
 
-			keyDigest, err := crypto.Blake2bDigest(key, decryptedSalt)
-			if err != nil {
-				log.Printf("Failed to generate key digest: %v\n", err)
-				continue
-			}
+            keyDigest, err := crypto.Blake2bDigest(key, decryptedSalt)
+            if err != nil {
+                log.Printf("Failed to generate key digest: %v\n", err)
+                continue
+            }
 
-			secret := map[string]interface{}{
-				"key":       encryptedKey,
-				"keyDigest": keyDigest,
-				"value":     encryptedValue,
-				"folderId":  nil,
-				"tags":      []string{},
-				"comment":   "",
-			}
-			secrets = append(secrets, secret)
-		}
-	}
+            // Determine the path for the secret, default to "/" if not specified
+            path, ok := keyPaths[key]
+            if !ok {
+                path = "/" // Default path if not provided
+            }
 
-	return api.CreatePhaseSecrets(p.AppToken, envID, secrets, p.Host)
+            secret := map[string]interface{}{
+                "key":       encryptedKey,
+                "keyDigest": keyDigest,
+                "value":     encryptedValue,
+                "path":      path,
+                "tags":      []string{},
+                "comment":   "",
+            }
+            secrets = append(secrets, secret)
+        }
+    }
+
+    return api.CreatePhaseSecrets(p.AppToken, envID, secrets, p.Host)
 }
 
-// // UpdateSecret updates a specific secret in Phase KMS based on key and environment.
-// func (p *Phase) UpdateSecret(envName, key, value, appName string) error {
-//     // Fetch user data
-//     resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
-//     if err != nil {
-//         log.Fatalf("Failed to fetch user data: %v", err)
-//         return err
-//     }
-//     defer resp.Body.Close()
+func (p *Phase) UpdateSecret(envName, appName, key, value, path string) error {
+    // Fetch user data
+    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to fetch user data: %v", err)
+        return err
+    }
+    defer resp.Body.Close()
 
-//     var userData AppKeyResponse
-//     if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-//         log.Fatalf("Failed to decode user data: %v", err)
-//         return err
-//     }
+    var userData AppKeyResponse
+    if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+        log.Fatalf("Failed to decode user data: %v", err)
+        return err
+    }
 
-//     envKey, err := findEnvironmentKey(&userData, envName, appName)
-//     if err != nil {
-//         log.Fatalf("Failed to find environment key: %v", err)
-//         return err
-//     }
+    envKey, err := findEnvironmentKey(&userData, envName, appName)
+    if err != nil {
+        log.Fatalf("Failed to find environment key: %v", err)
+        return err
+    }
 
-//     decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
-//     if err != nil {
-//         log.Fatalf("Failed to decrypt wrapped salt: %v", err)
-//         return err
-//     }
+    decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
+    if err != nil {
+        log.Fatalf("Failed to decrypt wrapped salt: %v", err)
+        return err
+    }
 
-//     // Generate key digest
-//     keyDigest, err := crypto.Blake2bDigest(key, decryptedSalt)
-//     if err != nil {
-//         log.Fatalf("Failed to generate key digest: %v", err)
-//         return err
-//     }
+    // Generate key digest
+    keyDigest, err := crypto.Blake2bDigest(key, decryptedSalt)
+    if err != nil {
+        log.Fatalf("Failed to generate key digest: %v", err)
+        return err
+    }
 
-//     // Fetch a single secret based on keyDigest
-//     secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest)
-//     if err != nil {
-//         log.Printf("Failed to fetch secret: %v", err)
-//         return err
-//     }
+    // Fetch a single secret based on keyDigest
+    secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, path)
+    if err != nil {
+        log.Printf("Failed to fetch secret: %v", err)
+        return err
+    }
 
-//     publicKeyHex := envKey.IdentityKey
+    publicKeyHex := envKey.IdentityKey
 
-//     // Encrypt the key and value with the environment's public key
-//     encryptedKey, err := crypto.EncryptAsymmetric(key, publicKeyHex)
-//     if err != nil {
-//         log.Fatalf("Failed to encrypt key: %v", err)
-//         return err
-//     }
+    // Encrypt the key and value with the environment's public key
+    encryptedKey, err := crypto.EncryptAsymmetric(key, publicKeyHex)
+    if err != nil {
+        log.Fatalf("Failed to encrypt key: %v", err)
+        return err
+    }
 
-//     encryptedValue, err := crypto.EncryptAsymmetric(value, publicKeyHex)
-//     if err != nil {
-//         log.Fatalf("Failed to encrypt value: %v", err)
-//         return err
-//     }
+    encryptedValue, err := crypto.EncryptAsymmetric(value, publicKeyHex)
+    if err != nil {
+        log.Fatalf("Failed to encrypt value: %v", err)
+        return err
+    }
 
-//     secretID, ok := secret["id"].(string)
-//     if !ok {
-//         log.Fatalf("Secret ID is not a string")
-//         return fmt.Errorf("secret ID is not a string")
-//     }
+    secretID, ok := secret["id"].(string)
+    if !ok {
+        log.Fatalf("Secret ID is not a string")
+        return fmt.Errorf("secret ID is not a string")
+    }
 
-//     secretUpdatePayload := map[string]interface{}{
-//         "id":        secretID,
-//         "key":       encryptedKey,
-//         "keyDigest": keyDigest,
-//         "value":     encryptedValue,
-//         "folderId":  nil,
-//         "tags":      []string{},
-//         "comment":   "",
-//     }
+    // Default path to "/" if not provided
+    if path == "" {
+        path = "/"
+    }
 
-//     // Perform the update
-//     err = api.UpdatePhaseSecrets(p.AppToken, envKey.Environment.ID, []map[string]interface{}{secretUpdatePayload}, p.Host)
-//     if err != nil {
-//         log.Fatalf("Failed to update secret: %v", err)
-//         return err
-//     }
+    secretUpdatePayload := map[string]interface{}{
+        "id":        secretID,
+        "key":       encryptedKey,
+        "keyDigest": keyDigest,
+        "value":     encryptedValue,
+        "path":      path,
+        "tags":      []string{},
+        "comment":   "",
+    }
 
-//     log.Println("Secret updated successfully")
-//     return nil
-// }
+    // Perform the update
+    err = api.UpdatePhaseSecrets(p.AppToken, envKey.Environment.ID, []map[string]interface{}{secretUpdatePayload}, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to update secret: %v", err)
+        return err
+    }
 
+    log.Println("Secret updated successfully")
+    return nil
+}
 
-// // DeleteSecret deletes a secret in Phase KMS based on a key and environment.
-// func (p *Phase) DeleteSecret(envName, keyToDelete, appName string) error {
-//     // Fetch user data
-//     resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
-//     if err != nil {
-//         log.Fatalf("Failed to fetch user data: %v", err)
-//         return err
-//     }
-//     defer resp.Body.Close()
+// DeleteSecret deletes a secret in Phase KMS based on a key and environment.
+func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
+    // Fetch user data
+    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to fetch user data: %v", err)
+        return err
+    }
+    defer resp.Body.Close()
 
-//     var userData AppKeyResponse
-//     if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-//         log.Fatalf("Failed to decode user data: %v", err)
-//         return err
-//     }
+    var userData AppKeyResponse
+    if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+        log.Fatalf("Failed to decode user data: %v", err)
+        return err
+    }
 
-//     envKey, err := findEnvironmentKey(&userData, envName, appName)
-//     if err != nil {
-//         log.Printf("Failed to find environment key: %v", err)
-//         return err
-//     }
+    envKey, err := findEnvironmentKey(&userData, envName, appName)
+    if err != nil {
+        log.Printf("Failed to find environment key: %v", err)
+        return err
+    }
 
-//     decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
-//     if err != nil {
-//         log.Fatalf("Failed to decrypt wrapped salt: %v", err)
-//         return err
-//     }
+    decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
+    if err != nil {
+        log.Fatalf("Failed to decrypt wrapped salt: %v", err)
+        return err
+    }
 
-//     // Generate key digest
-//     keyDigest, err := crypto.Blake2bDigest(keyToDelete, decryptedSalt)
-//     if err != nil {
-//         log.Fatalf("Failed to generate key digest: %v", err)
-//         return err
-//     }
+    // Generate key digest
+    keyDigest, err := crypto.Blake2bDigest(keyToDelete, decryptedSalt)
+    if err != nil {
+        log.Fatalf("Failed to generate key digest: %v", err)
+        return err
+    }
 
-//     // Fetch the specific secret by its key digest
-//     secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest)
-//     if err != nil {
-//         log.Printf("Failed to fetch secret: %v", err)
-//         return err
-//     }
+    // Fetch the specific secret by its key digest and path
+    secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, path)
+    if err != nil {
+        log.Printf("Failed to fetch secret: %v", err)
+        return err
+    }
 
-//     secretID, ok := secret["id"].(string)
-//     if !ok {
-//         log.Printf("Secret ID is not a string for key: %v", keyToDelete)
-//         return fmt.Errorf("secret ID is not a string for key: %v", keyToDelete)
-//     }
+    secretID, ok := secret["id"].(string)
+    if !ok {
+        log.Printf("Secret ID is not a string for key: %v", keyToDelete)
+        return fmt.Errorf("secret ID is not a string for key: %v", keyToDelete)
+    }
 
-//     // Perform the delete operation for the found secret ID
-//     err = api.DeletePhaseSecrets(p.AppToken, envKey.Environment.ID, []string{secretID}, p.Host)
-//     if err != nil {
-//         log.Fatalf("Failed to delete secret: %v", err)
-//         return err
-//     }
+    // Perform the delete operation for the found secret ID
+    err = api.DeletePhaseSecrets(p.AppToken, envKey.Environment.ID, []string{secretID}, p.Host)
+    if err != nil {
+        log.Fatalf("Failed to delete secret: %v", err)
+        return err
+    }
 
-//     log.Println("Secret deleted successfully")
-//     return nil
-// }
+    log.Println("Secret deleted successfully")
+    return nil
+}
 
 // decryptSecret decrypts a secret's key, value, and optional comment using asymmetric decryption.
 func decryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex string) (decryptedKey string, decryptedValue string, decryptedComment string, err error) {
