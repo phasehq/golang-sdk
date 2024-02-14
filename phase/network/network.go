@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -58,22 +57,30 @@ func createHTTPClient() *http.Client {
     return client
 }
 
+// handleHTTPResponse checks the HTTP response status and handles errors appropriately.
 func handleHTTPResponse(resp *http.Response) error {
-    if resp.StatusCode == http.StatusForbidden {
-        log.Println("🚫 Not authorized. Token expired or revoked.")
-        return nil
-    }
-
-    if resp.StatusCode != http.StatusOK {
-        body, err := io.ReadAll(resp.Body)
-        if err != nil {
-            return fmt.Errorf("failed to read response body: %v", err)
-        }
-        errorMessage := fmt.Sprintf("🗿 Request failed with status code %d: %s", resp.StatusCode, string(body))
-        return fmt.Errorf(errorMessage)
-    }
-
-    return nil
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// If OK, nothing more to do.
+		return nil
+	case http.StatusForbidden:
+		// Handle forbidden access.
+		log.Println("🚫 Not authorized. Token expired or revoked.")
+		return nil
+	case http.StatusTooManyRequests:
+		// Handle rate limiting.
+		retryAfter := resp.Header.Get("Retry-After")
+		log.Printf("⏳ Rate limit exceeded. Retry after %s seconds.", retryAfter)
+		return fmt.Errorf("rate limit exceeded, retry after %s seconds", retryAfter)
+	default:
+		// Handle other unexpected statuses.
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read response body: %v", err)
+		}
+		errorMessage := fmt.Sprintf("🗿 Request failed with status code %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf(errorMessage)
+	}
 }
 
 func FetchPhaseUser(appToken, host string) (*http.Response, error) {
@@ -147,51 +154,6 @@ func FetchAppKey(appToken, host string) (string, error) {
     }
 
     return jsonResp.WrappedKeyShare, nil
-}
-
-// FetchWrappedKeyShare fetches the wrapped application key share from Phase KMS.
-func FetchWrappedKeyShare(appToken, host string) (string, error) {
-	client := &http.Client{}
-
-	// Check if SSL verification should be skipped
-	if !misc.VerifySSL {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	}
-
-	url := fmt.Sprintf("%s/service/secrets/tokens/", host)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header = ConstructHTTPHeaders(appToken)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("network error: please check your internet connection. Detail: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return "", fmt.Errorf("request failed with status code %d: failed to read response body", resp.StatusCode)
-		}
-		return "", fmt.Errorf("request failed with status code %d: %s", resp.StatusCode, string(body))
-	}
-
-	var jsonResp map[string]string
-	if err := json.NewDecoder(resp.Body).Decode(&jsonResp); err != nil {
-		return "", fmt.Errorf("failed to decode JSON from response: %v", err)
-	}
-
-	wrappedKeyShare, ok := jsonResp["wrapped_key_share"]
-	if !ok {
-		return "", fmt.Errorf("wrapped key share not found in the response")
-	}
-
-	return wrappedKeyShare, nil
 }
 
 func FetchPhaseSecrets(appToken, environmentID, host, path string) ([]map[string]interface{}, error) {
