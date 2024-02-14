@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/jamesruan/sodium"
-	"golang.org/x/crypto/blake2b"
 )
 
 // Spin up an ephemeral X25519 keypair
@@ -195,23 +194,29 @@ func DecryptAsymmetric(ciphertextString, privateKeyHex, publicKeyHex string) (st
     return plaintext, nil
 }
 
-// Blake2bDigest generates a BLAKE2b hash of the input string with a salt.
+// Blake2bDigest generates a BLAKE2b hash of the input string with a salt using the sodium library.
 func Blake2bDigest(inputStr, salt string) (string, error) {
-	hashSize := 32 // 32 bytes (256 bits)
-
-	h, err := blake2b.New(hashSize, []byte(salt))
-	if err != nil {
-		log.Printf("Failed to initialize BLAKE2b: %v\n", err)
-		return "", err
+	hashSize := 32 // 32 bytes (256 bits) as an example
+	var hasher *sodium.GenericHash
+	if len(salt) > 0 {
+		// Convert the salt string to a GenericHashKey.
+		key := sodium.GenericHashKey{Bytes: sodium.Bytes([]byte(salt))}
+		hasher = sodium.NewGenericHashKeyed(hashSize, key).(*sodium.GenericHash)
+	} else {
+		hasher = sodium.NewGenericHash(hashSize).(*sodium.GenericHash)
 	}
 
-	_, err = h.Write([]byte(inputStr))
+	// Write the input string to the hasher.
+	_, err := hasher.Write([]byte(inputStr))
 	if err != nil {
 		log.Printf("Failed to write to BLAKE2b hasher: %v\n", err)
 		return "", err
 	}
 
-	hashed := h.Sum(nil)
+	// Compute the hash.
+	hashed := hasher.Sum(nil)
+
+	// Encode the hash to a hexadecimal string.
 	hexEncoded := hex.EncodeToString(hashed)
 	return hexEncoded, nil
 }
