@@ -413,62 +413,40 @@ func (p *Phase) DeleteSecret(envName, keyToDelete, appName string) error {
         return err
     }
 
-    _, envID, publicKey, err := phaseGetContext(&userData, appName, envName)
-    if err != nil {
-        log.Fatalf("Failed to get context: %v", err)
-        return err
-    }
-
-    secrets, err := api.FetchPhaseSecrets(p.AppToken, envID, p.Host)
-    if err != nil {
-        log.Fatalf("Failed to fetch secrets: %v", err)
-        return err
-    }
-
     envKey, err := findEnvironmentKey(&userData, envName, appName)
     if err != nil {
         log.Printf("Failed to find environment key: %v", err)
         return err
     }
 
-    decryptedSeed, err := p.Decrypt(envKey.WrappedSeed)
+    decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
     if err != nil {
-        log.Fatalf("Failed to decrypt wrapped seed: %v", err)
+        log.Fatalf("Failed to decrypt wrapped salt: %v", err)
         return err
     }
 
-    _, privateKeyHex, err := generateEnvKeyPair(decryptedSeed)
+    // Generate key digest
+    keyDigest, err := crypto.Blake2bDigest(keyToDelete, decryptedSalt)
     if err != nil {
-        log.Fatalf("Failed to generate environment key pair: %v", err)
+        log.Fatalf("Failed to generate key digest: %v", err)
         return err
     }
 
-    var secretIDToDelete string
-    for _, secret := range secrets {
-        decryptedKey, _, _, err := decryptSecret(secret, privateKeyHex, publicKey)
-        if err != nil {
-            log.Printf("Failed to decrypt secret key: %v\n", err)
-            continue
-        }
-
-        if decryptedKey == keyToDelete {
-            secretID, ok := secret["id"].(string)
-            if !ok {
-                log.Printf("Secret ID is not a string for key: %v", keyToDelete)
-                continue
-            }
-            secretIDToDelete = secretID
-            break
-        }
+    // Fetch the specific secret by its key digest
+    secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest)
+    if err != nil {
+        log.Printf("Failed to fetch secret: %v", err)
+        return err
     }
 
-    if secretIDToDelete == "" {
-        log.Printf("Key '%s' doesn't exist.", keyToDelete)
-        return fmt.Errorf("key '%s' doesn't exist", keyToDelete)
+    secretID, ok := secret["id"].(string)
+    if !ok {
+        log.Printf("Secret ID is not a string for key: %v", keyToDelete)
+        return fmt.Errorf("secret ID is not a string for key: %v", keyToDelete)
     }
 
     // Perform the delete operation for the found secret ID
-    err = api.DeletePhaseSecrets(p.AppToken, envID, []string{secretIDToDelete}, p.Host)
+    err = api.DeletePhaseSecrets(p.AppToken, envKey.Environment.ID, []string{secretID}, p.Host)
     if err != nil {
         log.Fatalf("Failed to delete secret: %v", err)
         return err
