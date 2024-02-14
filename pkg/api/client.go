@@ -202,10 +202,10 @@ func FetchWrappedKeyShare(appToken, host string) (string, error) {
 	return wrappedKeyShare, nil
 }
 
-func FetchPhaseSecrets(appToken, environmentID, host string) ([]map[string]interface{}, error) {
+func FetchPhaseSecrets(appToken, environmentID, host, path string) ([]map[string]interface{}, error) {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/", host)
-    
+
     req, err := http.NewRequest("GET", url, nil)
     if err != nil {
         return nil, err
@@ -213,6 +213,9 @@ func FetchPhaseSecrets(appToken, environmentID, host string) ([]map[string]inter
 
     req.Header = ConstructHTTPHeaders(appToken)
     req.Header.Set("Environment", environmentID)
+    if path != "" {
+        req.Header.Set("Path", path)
+    }
 
     resp, err := client.Do(req)
     if err != nil {
@@ -232,7 +235,7 @@ func FetchPhaseSecrets(appToken, environmentID, host string) ([]map[string]inter
     return secrets, nil
 }
 
-func FetchPhaseSecret(appToken, environmentID, host, keyDigest string) (map[string]interface{}, error) {
+func FetchPhaseSecret(appToken, environmentID, host, keyDigest, path string) (map[string]interface{}, error) {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/", host)
 
@@ -241,10 +244,12 @@ func FetchPhaseSecret(appToken, environmentID, host, keyDigest string) (map[stri
         return nil, err
     }
 
-    // Set headers
     req.Header = ConstructHTTPHeaders(appToken)
     req.Header.Set("Environment", environmentID)
     req.Header.Set("KeyDigest", keyDigest)
+    if path != "" {
+        req.Header.Set("Path", path)
+    }
 
     resp, err := client.Do(req)
     if err != nil {
@@ -256,20 +261,17 @@ func FetchPhaseSecret(appToken, environmentID, host, keyDigest string) (map[stri
         return nil, err
     }
 
-    // Adjust to decode an array of secrets
     var secrets []map[string]interface{}
     if err := json.NewDecoder(resp.Body).Decode(&secrets); err != nil {
         return nil, fmt.Errorf("failed to decode JSON response: %v", err)
     }
 
-    // Assuming the array always contains exactly one secret when successful
     if len(secrets) > 0 {
         return secrets[0], nil
     }
 
     return nil, fmt.Errorf("no secrets found in the response")
 }
-
 
 func CreatePhaseSecrets(appToken, environmentID string, secrets []map[string]interface{}, host string) error {
     client := createHTTPClient()
