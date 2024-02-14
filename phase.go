@@ -73,6 +73,14 @@ type AppKeyResponse struct {
     Apps            []App  `json:"apps"`
 }
 
+// UpdateSecretOptions holds all the options for updating a secret.
+type UpdateSecretOptions struct {
+    EnvName    string
+    AppName    string
+    Key        string
+    Value      string
+    Path       string
+}
 
 func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[string]interface{}, error) {
     // Fetch user data
@@ -322,7 +330,7 @@ func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appNam
     return api.CreatePhaseSecrets(p.AppToken, envID, secrets, p.Host)
 }
 
-func (p *Phase) UpdateSecret(envName, appName, key, value, path string) error {
+func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
     // Fetch user data
     resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
@@ -337,7 +345,7 @@ func (p *Phase) UpdateSecret(envName, appName, key, value, path string) error {
         return err
     }
 
-    envKey, err := findEnvironmentKey(&userData, envName, appName)
+    envKey, err := findEnvironmentKey(&userData, opts.EnvName, opts.AppName)
     if err != nil {
         log.Fatalf("Failed to find environment key: %v", err)
         return err
@@ -350,14 +358,14 @@ func (p *Phase) UpdateSecret(envName, appName, key, value, path string) error {
     }
 
     // Generate key digest
-    keyDigest, err := crypto.Blake2bDigest(key, decryptedSalt)
+    keyDigest, err := crypto.Blake2bDigest(opts.Key, decryptedSalt)
     if err != nil {
         log.Fatalf("Failed to generate key digest: %v", err)
         return err
     }
 
     // Fetch a single secret based on keyDigest
-    secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, path)
+    secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, opts.Path)
     if err != nil {
         log.Printf("Failed to fetch secret: %v", err)
         return err
@@ -366,13 +374,13 @@ func (p *Phase) UpdateSecret(envName, appName, key, value, path string) error {
     publicKeyHex := envKey.IdentityKey
 
     // Encrypt the key and value with the environment's public key
-    encryptedKey, err := crypto.EncryptAsymmetric(key, publicKeyHex)
+    encryptedKey, err := crypto.EncryptAsymmetric(opts.Key, publicKeyHex)
     if err != nil {
         log.Fatalf("Failed to encrypt key: %v", err)
         return err
     }
 
-    encryptedValue, err := crypto.EncryptAsymmetric(value, publicKeyHex)
+    encryptedValue, err := crypto.EncryptAsymmetric(opts.Value, publicKeyHex)
     if err != nil {
         log.Fatalf("Failed to encrypt value: %v", err)
         return err
@@ -385,8 +393,8 @@ func (p *Phase) UpdateSecret(envName, appName, key, value, path string) error {
     }
 
     // Default path to "/" if not provided
-    if path == "" {
-        path = "/"
+    if opts.Path == "" {
+        opts.Path = "/"
     }
 
     secretUpdatePayload := map[string]interface{}{
@@ -394,7 +402,7 @@ func (p *Phase) UpdateSecret(envName, appName, key, value, path string) error {
         "key":       encryptedKey,
         "keyDigest": keyDigest,
         "value":     encryptedValue,
-        "path":      path,
+        "path":      opts.Path,
         "tags":      []string{},
         "comment":   "",
     }
@@ -409,6 +417,7 @@ func (p *Phase) UpdateSecret(envName, appName, key, value, path string) error {
     log.Println("Secret updated successfully")
     return nil
 }
+
 
 // DeleteSecret deletes a secret in Phase KMS based on a key and environment.
 func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
