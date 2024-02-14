@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/phasehq/golang-sdk/phase/crypto"
+	"github.com/phasehq/golang-sdk/phase/misc"
 	"github.com/phasehq/golang-sdk/phase/network"
 )
 
@@ -21,56 +21,6 @@ type Phase struct {
 	Host             string
 }
 
-// Init initializes a new instance of Phase with the provided service token and host.
-func Init(serviceToken, host string) *Phase {
-	// Split the service token by ':' to extract its components.
-	parts := strings.Split(serviceToken, ":")
-	if len(parts) != 6 {
-		log.Fatalf("Service token format is invalid: expected 6 parts, got %d", len(parts))
-	}
-
-	// Create a new Phase instance with parsed service token components.
-	return &Phase{
-		Prefix:           parts[0],
-		PesVersion:       parts[1],
-		AppToken:         parts[2],
-		PssUserPublicKey: parts[3],
-		Keyshare0:        parts[4],
-		Keyshare1UnwrapKey: parts[5],
-		Host:             host,
-	}
-}
-
-type Environment struct {
-    ID      string `json:"id"`
-    Name    string `json:"name"`
-    EnvType string `json:"env_type"`
-}
-
-type EnvironmentKey struct {
-    ID           string      `json:"id"`
-    Environment  Environment `json:"environment"`
-    IdentityKey  string      `json:"identity_key"`
-    WrappedSeed  string      `json:"wrapped_seed"`
-    WrappedSalt  string      `json:"wrapped_salt"`
-    CreatedAt    string      `json:"created_at"`
-    UpdatedAt    string      `json:"updated_at"`
-    DeletedAt    *string     `json:"deleted_at"`
-    User         *string     `json:"user"`
-}
-
-type App struct {
-    ID              string          `json:"id"`
-    Name            string          `json:"name"`
-    Encryption      string          `json:"encryption"`
-    EnvironmentKeys []EnvironmentKey `json:"environment_keys"`
-}
-
-type AppKeyResponse struct {
-    WrappedKeyShare string `json:"wrapped_key_share"`
-    Apps            []App  `json:"apps"`
-}
-
 // UpdateSecretOptions holds all the options for updating a secret.
 type UpdateSecretOptions struct {
     EnvName    string
@@ -78,6 +28,36 @@ type UpdateSecretOptions struct {
     Key        string
     Value      string
     Path       string
+}
+
+// Init initializes a new instance of Phase with the provided service token and host.
+func Init(serviceToken, host string, debug bool) *Phase {
+	// Validate the service token against the pattern.
+	matches := misc.PssServicePattern.FindStringSubmatch(serviceToken)
+	if matches == nil || len(matches) != 6 {
+		log.Fatalf("Error: Invalid Phase Service Token.")
+	}
+
+	// Use default host if none is specified.
+	if host == "" {
+		host = misc.PhaseCloudAPIHost
+	}
+
+    	// Use default host if none is specified.
+	if host == "" {
+		host = misc.PhaseCloudAPIHost
+	}
+
+	// Create a new Phase instance with parsed service token components.
+	return &Phase{
+		Prefix:            "pss_service",
+		PesVersion:        matches[1],
+		AppToken:          matches[2],
+		PssUserPublicKey:  matches[3],
+		Keyshare0:         matches[4],
+		Keyshare1UnwrapKey: matches[5],
+		Host:              host,
+	}
 }
 
 func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[string]interface{}, error) {
@@ -89,13 +69,13 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
     }
     defer resp.Body.Close()
 
-    var userData AppKeyResponse
+    var userData misc.AppKeyResponse
     if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
         log.Printf("Failed to decode user data: %v", err)
         return nil, err
     }
 
-    envKey, err := findEnvironmentKey(&userData, envName, appName)
+    envKey, err := misc.FindEnvironmentKey(userData, envName, appName)
     if err != nil {
         log.Printf("Failed to find environment key: %v", err)
         return nil, err
@@ -131,7 +111,7 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
         return nil, err
     }
 
-    decryptedKey, decryptedValue, decryptedComment, err := decryptSecret(secret, privateKeyHex, publicKeyHex)
+    decryptedKey, decryptedValue, decryptedComment, err := crypto.DecryptSecret(secret, privateKeyHex, publicKeyHex)
     if err != nil {
         log.Printf("Failed to decrypt secret: %v", err)
         return nil, err
@@ -146,7 +126,7 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
                     stringTags = append(stringTags, tagStr)
                 }
             }
-            if !tagMatches(stringTags, tag) {
+            if !misc.TagMatches(stringTags, tag) {
                 return nil, fmt.Errorf("secret with key '%s' found, but doesn't match the provided tag '%s'", keyToFind, tag)
             }
         }
@@ -175,14 +155,14 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
     }
     defer resp.Body.Close()
 
-    var userData AppKeyResponse
+    var userData misc.AppKeyResponse
     if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
         log.Fatalf("Failed to decode user data: %v", err)
         return nil, err
     }
 
     // Identify the correct environment and application
-    envKey, err := findEnvironmentKey(&userData, envName, appName)
+    envKey, err := misc.FindEnvironmentKey(userData, envName, appName)
     if err != nil {
         log.Fatalf("Failed to find environment key: %v", err)
         return nil, err
@@ -212,7 +192,7 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
     decryptedSecrets := make([]map[string]interface{}, 0)
     for _, secret := range secrets {
         // Decrypt key, value, and optional comment
-        decryptedKey, decryptedValue, decryptedComment, err := decryptSecret(secret, privateKeyHex, publicKeyHex)
+        decryptedKey, decryptedValue, decryptedComment, err := crypto.DecryptSecret(secret, privateKeyHex, publicKeyHex)
         if err != nil {
             log.Printf("Failed to decrypt secret: %v\n", err)
             continue
@@ -229,7 +209,7 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
         }
 
         // Check for tag match if a tag is provided
-        if tag != "" && !tagMatches(stringTags, tag) {
+        if tag != "" && !misc.TagMatches(stringTags, tag) {
             continue
         }
 
@@ -261,20 +241,20 @@ func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appNam
     }
     defer resp.Body.Close()
 
-    var userData AppKeyResponse
+    var userData misc.AppKeyResponse
     if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
         log.Fatalf("Failed to decode user data: %v", err)
         return err
     }
 
-    _, envID, publicKey, err := phaseGetContext(&userData, appName, envName)
+    _, envID, publicKey, err := misc.PhaseGetContext(userData, appName, envName)
     if err != nil {
         log.Fatalf("Failed to get context: %v", err)
         return err
     }
 
     // Identify the correct environment and application
-    envKey, err := findEnvironmentKey(&userData, envName, appName)
+    envKey, err := misc.FindEnvironmentKey(userData, envName, appName)
     if err != nil {
         log.Printf("Failed to find environment key: %v", err)
         return err
@@ -337,13 +317,13 @@ func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
     }
     defer resp.Body.Close()
 
-    var userData AppKeyResponse
+    var userData misc.AppKeyResponse
     if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
         log.Fatalf("Failed to decode user data: %v", err)
         return err
     }
 
-    envKey, err := findEnvironmentKey(&userData, opts.EnvName, opts.AppName)
+    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
     if err != nil {
         log.Fatalf("Failed to find environment key: %v", err)
         return err
@@ -427,13 +407,13 @@ func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
     }
     defer resp.Body.Close()
 
-    var userData AppKeyResponse
+    var userData misc.AppKeyResponse
     if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
         log.Fatalf("Failed to decode user data: %v", err)
         return err
     }
 
-    envKey, err := findEnvironmentKey(&userData, envName, appName)
+    envKey, err := misc.FindEnvironmentKey(userData, envName, appName)
     if err != nil {
         log.Printf("Failed to find environment key: %v", err)
         return err
@@ -474,102 +454,4 @@ func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
 
     log.Println("Secret deleted successfully")
     return nil
-}
-
-// decryptSecret decrypts a secret's key, value, and optional comment using asymmetric decryption.
-func decryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex string) (decryptedKey string, decryptedValue string, decryptedComment string, err error) {
-    // Decrypt the key
-    key, ok := secret["key"].(string)
-    if !ok {
-        err = fmt.Errorf("key is not a string")
-        return
-    }
-    decryptedKey, err = crypto.DecryptAsymmetric(key, privateKeyHex, publicKeyHex)
-    if err != nil {
-        log.Printf("Failed to decrypt key: %v\n", err)
-        return
-    }
-
-    // Decrypt the value
-    value, ok := secret["value"].(string)
-    if !ok {
-        err = fmt.Errorf("value is not a string")
-        return
-    }
-    decryptedValue, err = crypto.DecryptAsymmetric(value, privateKeyHex, publicKeyHex)
-    if err != nil {
-        log.Printf("Failed to decrypt value: %v\n", err)
-        return
-    }
-
-    // Decrypt the comment if it exists
-    comment, ok := secret["comment"].(string)
-    if ok && comment != "" {
-        decryptedComment, err = crypto.DecryptAsymmetric(comment, privateKeyHex, publicKeyHex)
-        if err != nil {
-            log.Printf("Failed to decrypt comment: %v\n", err)
-            // We decide not to return an error here because comments are optional and failure to decrypt them
-            // should not prevent the rest of the secret data from being used.
-            err = nil
-        }
-    }
-
-    return decryptedKey, decryptedValue, decryptedComment, nil
-}
-
-
-// Helper function to check if a slice contains a string
-func contains(slice []string, str string) bool {
-    for _, v := range slice {
-        if v == str {
-            return true
-        }
-    }
-    return false
-}
-
-// phaseGetContext finds the matching application and environment, returning their IDs and the public key.
-func phaseGetContext(userData *AppKeyResponse, appName, envName string) (string, string, string, error) {
-	for _, app := range userData.Apps {
-		if app.Name == appName {
-			for _, envKey := range app.EnvironmentKeys {
-				if envKey.Environment.Name == envName {
-					return app.ID, envKey.Environment.ID, envKey.IdentityKey, nil
-				}
-			}
-		}
-	}
-	return "", "", "", fmt.Errorf("matching context not found")
-}
-
-
-func findEnvironmentKey(userData *AppKeyResponse, envName, appName string) (*EnvironmentKey, error) {
-    for _, app := range userData.Apps {
-        if appName == "" || app.Name == appName {
-            for _, envKey := range app.EnvironmentKeys {
-                if envKey.Environment.Name == envName {
-                    return &envKey, nil // This should now match the expected return type
-                }
-            }
-        }
-    }
-    return nil, fmt.Errorf("environment key not found")
-}
-
-
-// normalizeTag replaces underscores with spaces and converts the string to lower case.
-func normalizeTag(tag string) string {
-    return strings.ToLower(strings.Replace(tag, "_", " ", -1))
-}
-
-// tagMatches checks if the user-provided tag partially matches any of the secret tags.
-func tagMatches(secretTags []string, userTag string) bool {
-    normalizedUserTag := normalizeTag(userTag)
-    for _, tag := range secretTags {
-        normalizedSecretTag := normalizeTag(tag)
-        if strings.Contains(normalizedSecretTag, normalizedUserTag) {
-            return true
-        }
-    }
-    return false
 }

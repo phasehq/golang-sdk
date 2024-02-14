@@ -195,6 +195,45 @@ func DecryptAsymmetric(ciphertextString, privateKeyHex, publicKeyHex string) (st
     return plaintext, nil
 }
 
+// decryptSecret decrypts a secret's key, value, and optional comment using asymmetric decryption.
+func DecryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex string) (decryptedKey string, decryptedValue string, decryptedComment string, err error) {
+    // Decrypt the key
+    key, ok := secret["key"].(string)
+    if !ok {
+        err = fmt.Errorf("key is not a string")
+        return
+    }
+    decryptedKey, err = DecryptAsymmetric(key, privateKeyHex, publicKeyHex)
+    if err != nil {
+        log.Printf("Failed to decrypt key: %v\n", err)
+        return
+    }
+
+    // Decrypt the value
+    value, ok := secret["value"].(string)
+    if !ok {
+        err = fmt.Errorf("value is not a string")
+        return
+    }
+    decryptedValue, err = DecryptAsymmetric(value, privateKeyHex, publicKeyHex)
+    if err != nil {
+        log.Printf("Failed to decrypt value: %v\n", err)
+        return
+    }
+
+    // Decrypt the comment if it exists
+    comment, ok := secret["comment"].(string)
+    if ok && comment != "" {
+        decryptedComment, err = DecryptAsymmetric(comment, privateKeyHex, publicKeyHex)
+        if err != nil {
+            log.Printf("Failed to decrypt comment: %v\n", err)
+            err = nil
+        }
+    }
+
+    return decryptedKey, decryptedValue, decryptedComment, nil
+}
+
 // Decrypt decrypts the provided ciphertext using the Phase encryption mechanism.
 func DecryptWrappedKeyShare(Keyshare1 string, Keyshare0 string, AppToken string, Keyshare1UnwrapKey string, PssUserPublicKey string, Host string) (string, error) {
 	// Fetch the wrapped key share using the app token and host
