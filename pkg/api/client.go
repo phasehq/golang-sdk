@@ -232,6 +232,44 @@ func FetchPhaseSecrets(appToken, environmentID, host string) ([]map[string]inter
     return secrets, nil
 }
 
+func FetchPhaseSecret(appToken, environmentID, host, keyDigest string) (map[string]interface{}, error) {
+    client := createHTTPClient()
+    url := fmt.Sprintf("%s/service/secrets/", host)
+
+    req, err := http.NewRequest("GET", url, nil)
+    if err != nil {
+        return nil, err
+    }
+
+    // Set headers
+    req.Header = ConstructHTTPHeaders(appToken)
+    req.Header.Set("Environment", environmentID)
+    req.Header.Set("KeyDigest", keyDigest)
+
+    resp, err := client.Do(req)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    if err := handleHTTPResponse(resp); err != nil {
+        return nil, err
+    }
+
+    // Adjust to decode an array of secrets
+    var secrets []map[string]interface{}
+    if err := json.NewDecoder(resp.Body).Decode(&secrets); err != nil {
+        return nil, fmt.Errorf("failed to decode JSON response: %v", err)
+    }
+
+    // Assuming the array always contains exactly one secret when successful
+    if len(secrets) > 0 {
+        return secrets[0], nil
+    }
+
+    return nil, fmt.Errorf("no secrets found in the response")
+}
+
 
 func CreatePhaseSecrets(appToken, environmentID string, secrets []map[string]interface{}, host string) error {
     client := createHTTPClient()
