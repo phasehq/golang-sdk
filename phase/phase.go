@@ -21,13 +21,41 @@ type Phase struct {
 	Host             string
 }
 
-// UpdateSecretOptions holds all the options for updating a secret.
-type UpdateSecretOptions struct {
+type GetSecretOptions struct {
+    EnvName   string
+    AppName   string
+    KeyToFind string
+    Tag       string
+    SecretPath string
+}
+
+type GetAllSecretsOptions struct {
+    EnvName string
+    AppName string
+    Tag     string
+    SecretPath string
+}
+
+type CreateSecretsOptions struct {
+    KeyValuePairs []map[string]string
+    EnvName       string
+    AppName       string
+    SecretPath    map[string]string
+}
+
+type SecretUpdateOptions struct {
     EnvName    string
     AppName    string
     Key        string
     Value      string
-    Path       string
+    SecretPath string
+}
+
+type DeleteSecretOptions struct {
+    EnvName     string
+    AppName     string
+    KeyToDelete string
+    SecretPath  string
 }
 
 // Init initializes a new instance of Phase with the provided service token and host.
@@ -39,11 +67,6 @@ func Init(serviceToken, host string, debug bool) *Phase {
 	}
 
 	// Use default host if none is specified.
-	if host == "" {
-		host = misc.PhaseCloudAPIHost
-	}
-
-    	// Use default host if none is specified.
 	if host == "" {
 		host = misc.PhaseCloudAPIHost
 	}
@@ -60,7 +83,7 @@ func Init(serviceToken, host string, debug bool) *Phase {
 	}
 }
 
-func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[string]interface{}, error) {
+func (p *Phase) Get(opts GetSecretOptions) (*map[string]interface{}, error) {
     // Fetch user data
     resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
@@ -75,7 +98,7 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
         return nil, err
     }
 
-    envKey, err := misc.FindEnvironmentKey(userData, envName, appName)
+    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
     if err != nil {
         log.Printf("Failed to find environment key: %v", err)
         return nil, err
@@ -98,14 +121,14 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
         return nil, err
     }
 
-    keyDigest, err := crypto.Blake2bDigest(keyToFind, decryptedSalt)
+    keyDigest, err := crypto.Blake2bDigest(opts.KeyToFind, decryptedSalt)
     if err != nil {
         log.Printf("Failed to generate key digest: %v", err)
         return nil, err
     }
 
     // Fetch a single secret based on keyDigest and optional path
-    secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, path)
+    secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, opts.SecretPath)
     if err != nil {
         log.Printf("Failed to fetch secret: %v", err)
         return nil, err
@@ -119,15 +142,15 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
 
     // Verify tag match if a tag is provided
     var stringTags []string
-    if tag != "" {
+    if opts.Tag != "" {
         if secretTags, ok := secret["tags"].([]interface{}); ok {
             for _, tagInterface := range secretTags {
                 if tagStr, ok := tagInterface.(string); ok {
                     stringTags = append(stringTags, tagStr)
                 }
             }
-            if !misc.TagMatches(stringTags, tag) {
-                return nil, fmt.Errorf("secret with key '%s' found, but doesn't match the provided tag '%s'", keyToFind, tag)
+            if !misc.TagMatches(stringTags, opts.Tag) {
+                return nil, fmt.Errorf("secret with key '%s' found, but doesn't match the provided tag '%s'", opts.KeyToFind, opts.Tag)
             }
         }
     }
@@ -146,7 +169,7 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
     return result, nil
 }
 
-func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]interface{}, error) {
+func (p *Phase) GetAll(opts GetAllSecretsOptions) ([]map[string]interface{}, error) {
     // Fetch user data
     resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
@@ -162,7 +185,7 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
     }
 
     // Identify the correct environment and application
-    envKey, err := misc.FindEnvironmentKey(userData, envName, appName)
+    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
     if err != nil {
         log.Fatalf("Failed to find environment key: %v", err)
         return nil, err
@@ -183,7 +206,7 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
     }
 
     // Fetch secrets with optional path filtering
-    secrets, err := network.FetchPhaseSecrets(p.AppToken, envKey.Environment.ID, p.Host, path)
+    secrets, err := network.FetchPhaseSecrets(p.AppToken, envKey.Environment.ID, p.Host, opts.SecretPath)
     if err != nil {
         log.Fatalf("Failed to fetch secrets: %v", err)
         return nil, err
@@ -209,7 +232,7 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
         }
 
         // Check for tag match if a tag is provided
-        if tag != "" && !misc.TagMatches(stringTags, tag) {
+        if opts.Tag != "" && !misc.TagMatches(stringTags, opts.Tag) {
             continue
         }
 
@@ -232,7 +255,7 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
 }
 
 // CreateSecrets creates new secrets in the Phase KMS for the specified environment and application.
-func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appName string, keyPaths map[string]string) error {
+func (p *Phase) Create(opts CreateSecretsOptions) error {
     // Fetch user data
     resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
@@ -247,14 +270,14 @@ func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appNam
         return err
     }
 
-    _, envID, publicKey, err := misc.PhaseGetContext(userData, appName, envName)
+    _, envID, publicKey, err := misc.PhaseGetContext(userData, opts.AppName, opts.EnvName)
     if err != nil {
         log.Fatalf("Failed to get context: %v", err)
         return err
     }
 
     // Identify the correct environment and application
-    envKey, err := misc.FindEnvironmentKey(userData, envName, appName)
+    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
     if err != nil {
         log.Printf("Failed to find environment key: %v", err)
         return err
@@ -267,7 +290,7 @@ func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appNam
     }
 
     secrets := make([]map[string]interface{}, 0)
-    for _, pair := range keyValuePairs {
+    for _, pair := range opts.KeyValuePairs {
         for key, value := range pair {
             encryptedKey, err := crypto.EncryptAsymmetric(key, publicKey)
             if err != nil {
@@ -288,7 +311,7 @@ func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appNam
             }
 
             // Determine the path for the secret, default to "/" if not specified
-            path, ok := keyPaths[key]
+            path, ok := opts.SecretPath[key]
             if !ok {
                 path = "/" // Default path if not provided
             }
@@ -308,7 +331,7 @@ func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appNam
     return network.CreatePhaseSecrets(p.AppToken, envID, secrets, p.Host)
 }
 
-func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
+func (p *Phase) Update(opts SecretUpdateOptions) error {
     // Fetch user data
     resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
@@ -343,7 +366,7 @@ func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
     }
 
     // Fetch a single secret based on keyDigest
-    secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, opts.Path)
+    secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, opts.SecretPath)
     if err != nil {
         log.Printf("Failed to fetch secret: %v", err)
         return err
@@ -371,8 +394,8 @@ func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
     }
 
     // Default path to "/" if not provided
-    if opts.Path == "" {
-        opts.Path = "/"
+    if opts.SecretPath == "" {
+        opts.SecretPath = "/"
     }
 
     secretUpdatePayload := map[string]interface{}{
@@ -380,7 +403,7 @@ func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
         "key":       encryptedKey,
         "keyDigest": keyDigest,
         "value":     encryptedValue,
-        "path":      opts.Path,
+        "path":      opts.SecretPath,
         "tags":      []string{},
         "comment":   "",
     }
@@ -398,7 +421,7 @@ func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
 
 
 // DeleteSecret deletes a secret in Phase KMS based on a key and environment.
-func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
+func (p *Phase) Delete(opts DeleteSecretOptions) error {
     // Fetch user data
     resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
@@ -413,7 +436,7 @@ func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
         return err
     }
 
-    envKey, err := misc.FindEnvironmentKey(userData, envName, appName)
+    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
     if err != nil {
         log.Printf("Failed to find environment key: %v", err)
         return err
@@ -426,14 +449,14 @@ func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
     }
 
     // Generate key digest
-    keyDigest, err := crypto.Blake2bDigest(keyToDelete, decryptedSalt)
+    keyDigest, err := crypto.Blake2bDigest(opts.KeyToDelete, decryptedSalt)
     if err != nil {
         log.Fatalf("Failed to generate key digest: %v", err)
         return err
     }
 
     // Fetch the specific secret by its key digest and path
-    secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, path)
+    secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, opts.SecretPath)
     if err != nil {
         log.Printf("Failed to fetch secret: %v", err)
         return err
@@ -441,8 +464,8 @@ func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
 
     secretID, ok := secret["id"].(string)
     if !ok {
-        log.Printf("Secret ID is not a string for key: %v", keyToDelete)
-        return fmt.Errorf("secret ID is not a string for key: %v", keyToDelete)
+        log.Printf("Secret ID is not a string for key: %v", opts.KeyToDelete)
+        return fmt.Errorf("secret ID is not a string for key: %v", opts.KeyToDelete)
     }
 
     // Perform the delete operation for the found secret ID
