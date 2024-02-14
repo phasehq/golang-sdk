@@ -1,15 +1,13 @@
 package phase
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
 
-	"github.com/jamesruan/sodium"
-	"github.com/phasehq/golang-sdk/pkg/api"
-	"github.com/phasehq/golang-sdk/pkg/crypto"
+	"github.com/phasehq/golang-sdk/phase/crypto"
+	"github.com/phasehq/golang-sdk/phase/network"
 )
 
 // Phase struct to hold parsed service token information and host.
@@ -84,7 +82,7 @@ type UpdateSecretOptions struct {
 
 func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[string]interface{}, error) {
     // Fetch user data
-    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
         log.Printf("Failed to fetch user data: %v", err)
         return nil, err
@@ -103,18 +101,18 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
         return nil, err
     }
 
-    decryptedSeed, err := p.Decrypt(envKey.WrappedSeed)
+    decryptedSeed, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSeed, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {
         log.Printf("Failed to decrypt wrapped seed: %v", err)
         return nil, err
     }
-    decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
+    decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {
         log.Printf("Failed to decrypt wrapped salt: %v", err)
         return nil, err
     }
 
-    publicKeyHex, privateKeyHex, err := generateEnvKeyPair(decryptedSeed)
+    publicKeyHex, privateKeyHex, err := crypto.GenerateEnvKeyPair(decryptedSeed)
     if err != nil {
         log.Printf("Failed to generate environment key pair: %v", err)
         return nil, err
@@ -127,7 +125,7 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
     }
 
     // Fetch a single secret based on keyDigest and optional path
-    secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, path)
+    secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, path)
     if err != nil {
         log.Printf("Failed to fetch secret: %v", err)
         return nil, err
@@ -170,7 +168,7 @@ func (p *Phase) PhaseGet(envName, appName, keyToFind, tag, path string) (*map[st
 
 func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]interface{}, error) {
     // Fetch user data
-    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
         log.Fatalf("Failed to fetch user data: %v", err)
         return nil, err
@@ -191,21 +189,21 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
     }
 
     // Decrypt the wrapped seed
-    decryptedSeed, err := p.Decrypt(envKey.WrappedSeed)
+    decryptedSeed, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSeed, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {
         log.Fatalf("Failed to decrypt wrapped seed: %v", err)
         return nil, err
     }
 
     // Generate environment key pair
-    publicKeyHex, privateKeyHex, err := generateEnvKeyPair(decryptedSeed)
+    publicKeyHex, privateKeyHex, err := crypto.GenerateEnvKeyPair(decryptedSeed)
     if err != nil {
         log.Fatalf("Failed to generate environment key pair: %v", err)
         return nil, err
     }
 
     // Fetch secrets with optional path filtering
-    secrets, err := api.FetchPhaseSecrets(p.AppToken, envKey.Environment.ID, p.Host, path)
+    secrets, err := network.FetchPhaseSecrets(p.AppToken, envKey.Environment.ID, p.Host, path)
     if err != nil {
         log.Fatalf("Failed to fetch secrets: %v", err)
         return nil, err
@@ -256,7 +254,7 @@ func (p *Phase) GetAllSecrets(envName, appName, tag, path string) ([]map[string]
 // CreateSecrets creates new secrets in the Phase KMS for the specified environment and application.
 func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appName string, keyPaths map[string]string) error {
     // Fetch user data
-    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
         log.Fatalf("Failed to fetch user data: %v", err)
         return err
@@ -282,7 +280,7 @@ func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appNam
         return err
     }
 
-    decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
+    decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {
         log.Fatalf("Failed to decrypt wrapped salt: %v", err)
         return err
@@ -327,12 +325,12 @@ func (p *Phase) CreateSecrets(keyValuePairs []map[string]string, envName, appNam
         }
     }
 
-    return api.CreatePhaseSecrets(p.AppToken, envID, secrets, p.Host)
+    return network.CreatePhaseSecrets(p.AppToken, envID, secrets, p.Host)
 }
 
 func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
     // Fetch user data
-    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
         log.Fatalf("Failed to fetch user data: %v", err)
         return err
@@ -351,7 +349,7 @@ func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
         return err
     }
 
-    decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
+    decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {
         log.Fatalf("Failed to decrypt wrapped salt: %v", err)
         return err
@@ -365,7 +363,7 @@ func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
     }
 
     // Fetch a single secret based on keyDigest
-    secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, opts.Path)
+    secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, opts.Path)
     if err != nil {
         log.Printf("Failed to fetch secret: %v", err)
         return err
@@ -408,7 +406,7 @@ func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
     }
 
     // Perform the update
-    err = api.UpdatePhaseSecrets(p.AppToken, envKey.Environment.ID, []map[string]interface{}{secretUpdatePayload}, p.Host)
+    err = network.UpdatePhaseSecrets(p.AppToken, envKey.Environment.ID, []map[string]interface{}{secretUpdatePayload}, p.Host)
     if err != nil {
         log.Fatalf("Failed to update secret: %v", err)
         return err
@@ -422,7 +420,7 @@ func (p *Phase) UpdateSecret(opts UpdateSecretOptions) error {
 // DeleteSecret deletes a secret in Phase KMS based on a key and environment.
 func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
     // Fetch user data
-    resp, err := api.FetchPhaseUser(p.AppToken, p.Host)
+    resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
     if err != nil {
         log.Fatalf("Failed to fetch user data: %v", err)
         return err
@@ -441,7 +439,7 @@ func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
         return err
     }
 
-    decryptedSalt, err := p.Decrypt(envKey.WrappedSalt)
+    decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {
         log.Fatalf("Failed to decrypt wrapped salt: %v", err)
         return err
@@ -455,7 +453,7 @@ func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
     }
 
     // Fetch the specific secret by its key digest and path
-    secret, err := api.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, path)
+    secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.Host, keyDigest, path)
     if err != nil {
         log.Printf("Failed to fetch secret: %v", err)
         return err
@@ -468,7 +466,7 @@ func (p *Phase) DeleteSecret(envName, appName, keyToDelete, path string) error {
     }
 
     // Perform the delete operation for the found secret ID
-    err = api.DeletePhaseSecrets(p.AppToken, envKey.Environment.ID, []string{secretID}, p.Host)
+    err = network.DeletePhaseSecrets(p.AppToken, envKey.Environment.ID, []string{secretID}, p.Host)
     if err != nil {
         log.Fatalf("Failed to delete secret: %v", err)
         return err
@@ -574,81 +572,4 @@ func tagMatches(secretTags []string, userTag string) bool {
         }
     }
     return false
-}
-
-
-// Decrypt decrypts the provided ciphertext using the Phase encryption mechanism.
-func (p *Phase) Decrypt(ciphertext string) (string, error) {
-	// Fetch the wrapped key share using the app token and host
-	wrappedKeyShare, err := api.FetchAppKey(p.AppToken, p.Host)
-	if err != nil {
-		log.Fatalf("Failed to fetch wrapped key share: %v", err)
-		return "", err
-	}
-
-	// Decode the wrapped key share from hex, not base64
-	wrappedKeyShareBytes, err := hex.DecodeString(wrappedKeyShare)
-	if err != nil {
-		log.Fatalf("Failed to decode wrapped key share from hex: %v", err)
-		return "", err
-	}
-
-	// Decode Keyshare1UnwrapKey from hex, ensuring it's correctly sized
-	keyshare1UnwrapKeyBytes, err := hex.DecodeString(p.Keyshare1UnwrapKey)
-	if err != nil {
-		log.Fatalf("Failed to decode Keyshare1UnwrapKey from hex: %v", err)
-		return "", err
-	}
-	if len(keyshare1UnwrapKeyBytes) != 32 { // Sodium expects a 32-byte key
-		log.Fatalf("Incorrect Keyshare1UnwrapKey size: expected 32 bytes, got %d", len(keyshare1UnwrapKeyBytes))
-		return "", err
-	}
-
-	keyshare1, err := crypto.DecryptRaw(wrappedKeyShareBytes, sodium.KXSessionKey{Bytes: keyshare1UnwrapKeyBytes})
-	if err != nil {
-		log.Fatalf("Failed to decrypt wrapped key share: %v", err)
-		return "", err
-	}
-
-	// Reconstruct the application's private key
-	appPrivateKey, err := crypto.ReconstructSecret(p.Keyshare0, string(keyshare1))
-	if err != nil {
-		log.Fatalf("Failed to reconstruct application's private key: %v", err)
-		return "", err
-	}
-
-	// Decrypt the ciphertext using the application's private key
-	plaintext, err := crypto.DecryptAsymmetric(ciphertext, appPrivateKey, p.PssUserPublicKey)
-	if err != nil {
-		log.Fatalf("Failed to decrypt ciphertext: %v", err)
-		return "", err
-	}
-
-	return plaintext, nil
-}
-
-func generateEnvKeyPair(seed string) (publicKeyHex, privateKeyHex string, err error) {
-	seedBytes, err := hex.DecodeString(seed)
-	if err != nil {
-		return "", "", err
-	}
-	if len(seedBytes) != 32 {
-		return "", "", fmt.Errorf("incorrect seed length: expected 32 bytes, got %d", len(seedBytes))
-	}
-
-    // Prepare the seed as KXSeed
-    var seedKX sodium.KXSeed
-    copy(seedKX.Bytes[:], seedBytes)
-
-	// Allocate slice if KXSeed.Bytes is a slice
-	seedKX.Bytes = make([]byte, len(seedBytes))
-	copy(seedKX.Bytes, seedBytes)
-
-    // Generate key pair from seed
-    keyPair := sodium.SeedKXKP(seedKX)
-
-    publicKeyHex = hex.EncodeToString(keyPair.PublicKey.Bytes[:])
-    privateKeyHex = hex.EncodeToString(keyPair.SecretKey.Bytes[:])
-
-    return publicKeyHex, privateKeyHex, nil
 }
