@@ -1,4 +1,4 @@
-package api
+package network
 
 import (
 	"bytes"
@@ -13,11 +13,8 @@ import (
 	"os/user"
 	"runtime"
 	"strings"
-)
 
-var (
-    verifySSL = os.Getenv("PHASE_VERIFY_SSL") != "false"
-    phaseDebug = os.Getenv("PHASE_DEBUG") == "true"
+	"github.com/phasehq/golang-sdk/phase/misc"
 )
 
 func ConstructHTTPHeaders(appToken string) http.Header {
@@ -28,11 +25,10 @@ func ConstructHTTPHeaders(appToken string) http.Header {
     return headers
 }
 
-
 func GetUserAgent() string {
     details := []string{}
 
-    cliVersion := "phase-golang-sdk/v1.0.0"
+    cliVersion := "phase-golang-sdk/" + misc.Version
     details = append(details, cliVersion)
 
     osType := runtime.GOOS
@@ -52,10 +48,9 @@ func GetUserAgent() string {
     return strings.Join(details, " ")
 }
 
-
 func createHTTPClient() *http.Client {
     client := &http.Client{}
-    if !verifySSL {
+    if !misc.VerifySSL {
         client.Transport = &http.Transport{
             TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
         }
@@ -80,7 +75,6 @@ func handleHTTPResponse(resp *http.Response) error {
 
     return nil
 }
-
 
 func FetchPhaseUser(appToken, host string) (*http.Response, error) {
     client := createHTTPClient()
@@ -128,7 +122,6 @@ type AppKeyResponse struct {
     } `json:"apps"`
 }
 
-
 func FetchAppKey(appToken, host string) (string, error) {
     client := createHTTPClient()
     url := fmt.Sprintf("%s/service/secrets/tokens/", host)
@@ -161,8 +154,7 @@ func FetchWrappedKeyShare(appToken, host string) (string, error) {
 	client := &http.Client{}
 
 	// Check if SSL verification should be skipped
-	verifySSL := os.Getenv("PHASE_VERIFY_SSL") != "false"
-	if !verifySSL {
+	if !misc.VerifySSL {
 		client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
