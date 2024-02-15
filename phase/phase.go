@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/phasehq/golang-sdk/phase/crypto"
 	"github.com/phasehq/golang-sdk/phase/misc"
@@ -85,6 +86,86 @@ func Init(serviceToken, host string, debug bool) *Phase {
     }
 }
 
+func (p *Phase) resolveSecretReference(ref, currentEnvName string) (string, error) {
+    var envName, path, keyName string
+
+    // Check if the reference starts with an environment name followed by a dot
+    if strings.Contains(ref, ".") {
+        // Split on the first dot to differentiate environment from path/key
+        parts := strings.SplitN(ref, ".", 2)
+        envName = parts[0]
+
+        // Further split the second part to separate the path and the key
+        // The last segment after the last "/" is the key, the rest is the path
+        lastSlashIndex := strings.LastIndex(parts[1], "/")
+        if lastSlashIndex != -1 { // Path is specified
+            path = parts[1][:lastSlashIndex] // Include the slash in the path
+            keyName = parts[1][lastSlashIndex+1:]
+        } else { // No path specified, use root
+            path = "/"
+            keyName = parts[1]
+        }
+    } else { // Local reference without an environment prefix
+        envName = currentEnvName
+        lastSlashIndex := strings.LastIndex(ref, "/")
+        if lastSlashIndex != -1 { // Path is specified
+            path = ref[:lastSlashIndex] // Include the slash in the path
+            keyName = ref[lastSlashIndex+1:]
+        } else { // No path specified, use root
+            path = "/"
+            keyName = ref
+        }
+    }
+
+    // Validate the extracted parts
+    if keyName == "" {
+        return "", fmt.Errorf("invalid secret reference format: %s", ref)
+    }
+
+    // Fetch and decrypt the referenced secret
+    opts := GetSecretOptions{
+        EnvName:    envName,
+        AppName:    "", // AppName is available globally
+        KeyToFind:  keyName,
+        SecretPath: path,
+    }
+    resolvedSecret, err := p.Get(opts)
+    if err != nil {
+        return "", fmt.Errorf("failed to resolve secret reference %s: %v", ref, err)
+    }
+
+    // Return the decrypted value of the referenced secret
+    decryptedValue, ok := (*resolvedSecret)["value"].(string)
+    if !ok {
+        return "", fmt.Errorf("decrypted value of the secret reference %s is not a string", ref)
+    }
+
+    return decryptedValue, nil
+}
+
+// resolveSecretValue resolves all secret references in a given value string.
+func (p *Phase) resolveSecretValue(value string, currentEnvName string) (string, error) {
+    refs := misc.SecretRefRegex.FindAllString(value, -1)
+    resolvedValue := value
+
+    for _, ref := range refs {
+        // Extract just the reference part without the surrounding ${}
+        refMatch := misc.SecretRefRegex.FindStringSubmatch(ref)
+        if len(refMatch) > 1 {
+            // Pass the current environment name if needed for resolution
+            resolvedSecretValue, err := p.resolveSecretReference(refMatch[1], currentEnvName)
+            if err != nil {
+                return "", err
+            }
+            // Directly use the string value returned by resolveSecretReference
+            resolvedValue = strings.Replace(resolvedValue, ref, resolvedSecretValue, -1)
+        }
+    }
+
+    return resolvedValue, nil
+}
+
+// Get fetches and decrypts a secret, resolving any secret references within its value.
 func (p *Phase) Get(opts GetSecretOptions) (*map[string]interface{}, error) {
     // Fetch user data
     resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
@@ -160,6 +241,15 @@ func (p *Phase) Get(opts GetSecretOptions) (*map[string]interface{}, error) {
         return nil, err
     }
 
+    // Resolve any secret references within the decryptedValue before creating the result map
+    resolvedValue, err := p.resolveSecretValue(decryptedValue, opts.EnvName)
+    if err != nil {
+        if p.Debug {
+            log.Printf("Failed to resolve secret value: %v", err)
+        }
+        return nil, err
+    }
+
     // Verify tag match if a tag is provided
     var stringTags []string
     if opts.Tag != "" {
@@ -180,7 +270,7 @@ func (p *Phase) Get(opts GetSecretOptions) (*map[string]interface{}, error) {
 
     result := &map[string]interface{}{
         "key":     decryptedKey,
-        "value":   decryptedValue,
+        "value":   resolvedValue, // Use resolvedValue here
         "comment": decryptedComment,
         "tags":    stringTags,
         "path":    secretPath,
@@ -259,6 +349,15 @@ func (p *Phase) GetAll(opts GetAllSecretsOptions) ([]map[string]interface{}, err
             continue
         }
 
+        // Resolve any secret references within the decryptedValue
+        resolvedValue, err := p.resolveSecretValue(decryptedValue, opts.EnvName)
+        if err != nil {
+            if p.Debug {
+                log.Printf("Failed to resolve secret value: %v\n", err)
+            }
+            continue
+        }
+
         // Prepare tags for inclusion in result
         var stringTags []string
         if secretTags, ok := secret["tags"].([]interface{}); ok {
@@ -280,7 +379,7 @@ func (p *Phase) GetAll(opts GetAllSecretsOptions) ([]map[string]interface{}, err
         // Append decrypted secret with path to result list
         result := map[string]interface{}{
             "key":     decryptedKey,
-            "value":   decryptedValue,
+            "value":   resolvedValue, // Use resolvedValue here
             "comment": decryptedComment,
             "tags":    stringTags,
             "path":    path,
