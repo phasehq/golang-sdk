@@ -2,9 +2,73 @@
 
 The Phase Secrets SDK provides a Go package for managing secrets in your application environments using the Phase service. This SDK let's you create, retrieve, update, and delete secrets, with end-to-end encryption with just a few lines of code.
 
+## Features:
+
+- End-to-end encrypting secret CRUD
+- Cross and local env secret referencing
+- Built in handling of rate limiting
+
+### Secret referencing syntax:
+
+| Reference syntax                  | Environment      | Path                              | Secret Key Being Referenced | Description                                                        |
+| --------------------------------- | ---------------- | --------------------------------- | --------------------------- | ------------------------------------------------------------------ |
+| `${KEY}`                          | same environment | `/                                | KEY                         | Local reference in the same environment and path root (/).         |
+| `${staging.DEBUG}`                | `dev`            | `/` (root of staging environment) | DEBUG                       | Cross-environment reference to a secret at the root (/).           |
+| `${prod./frontend/SECRET_KEY}`    | `prod`           | `/frontend/`                      | SECRET_KEY                  | Cross-environment reference to a secret in a specific path.        |
+| `${/backend/payments/STRIPE_KEY}` | same environment | `/backend/payments/`              | STRIPE_KEY                  | Local reference with a specified path within the same environment. |
+
 ## Installation
 
-To start using the Phase SDK in your Go project, install it using `go get`:
+This SDK uses the `sodium` package to perform cryptographic operations, on most system you will need to install the `libsodium` library as a system dependency. Here's how you can install `libsodium` or its development packages on different platforms, including macOS, Ubuntu, Debian, Arch Linux, Alpine Linux, and Windows.
+
+### macOS
+
+```sh
+brew install libsodium
+```
+
+## Fedora
+
+```sh
+sudo dnf install libsodium-devel
+```
+
+### Ubuntu and Debian
+
+```sh
+sudo apt-get update && sudo apt-get install libsodium-dev
+```
+
+### Arch Linux
+
+```sh
+sudo pacman -Syu libsodium
+```
+
+### Alpine Linux
+
+```sh
+sudo apk add libsodium-dev
+```
+
+### Windows
+
+On Windows, the process is a bit different due to the variety of development environments. However, you can download pre-built binaries from the official [libsodium GitHub releases page](https://github.com/jedisct1/libsodium/releases). Choose the appropriate version for your system architecture (e.g., Win32 or Win64), download it, and follow the instructions included to integrate `libsodium` with your development environment. For development with Visual Studio, you'll typically include the header files and link against the `libsodium.lib` or `libsodium.dll` file.
+
+If you're using a package manager like `vcpkg` or `chocolatey`, you can also find `libsodium` packages available for installation:
+
+- Using `vcpkg`:
+  ```sh
+  vcpkg install libsodium
+  ```
+- Using `chocolatey`:
+  ```sh
+  choco install libsodium
+  ```
+
+Remember, after installing the library, you might need to configure your project or environment variables to locate the `libsodium` libraries correctly, especially on Windows.
+
+Next, start using the Phase SDK in your Go project, install it using `go get`:
 
 ```bash
 go get github.com/phasehq/golang-sdk/phase
@@ -116,6 +180,6 @@ if err != nil {
 }
 ```
 
-For more information and advanced usage, refer to the official Phase documentation.
+For more information and advanced usage, refer to the [Phase Docs](https://docs.phase.dev/sdks/go).
 
 ---
