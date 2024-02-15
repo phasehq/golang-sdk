@@ -20,8 +20,12 @@ var (
 	// Compiled regex patterns
 	PssUserPattern    = regexp.MustCompile(`^pss_user:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$`)
 	PssServicePattern = regexp.MustCompile(`^pss_service:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$`)
-	CrossEnvPattern   = regexp.MustCompile(`\$\{(.+?)\.(.+?)\}`)
-	LocalRefPattern   = regexp.MustCompile(`\$\{([^.]+?)\}`)
+	
+    //CrossEnvPattern   = regexp.MustCompile(`\$\{(.+?)\.(.+?)\}`)
+	// LocalRefPattern   = regexp.MustCompile(`\$\{([^.]+?)\}`)
+    
+    // Regex to identify secret references
+    SecretRefRegex = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
 
 

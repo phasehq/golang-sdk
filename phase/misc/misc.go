@@ -19,17 +19,24 @@ func PhaseGetContext(userData AppKeyResponse, appName, envName string) (string, 
 	return "", "", "", fmt.Errorf("matching context not found")
 }
 
+// FindEnvironmentKey searches for an environment key with case-insensitive and partial matching.
 func FindEnvironmentKey(userData AppKeyResponse, envName, appName string) (*EnvironmentKey, error) {
+    // Convert envName and appName to lowercase for case-insensitive comparison
+    lcEnvName := strings.ToLower(envName)
+    lcAppName := strings.ToLower(appName)
+
     for _, app := range userData.Apps {
-        if appName == "" || app.Name == appName {
+        // Support partial and case-insensitive matching for appName
+        if appName == "" || strings.Contains(strings.ToLower(app.Name), lcAppName) {
             for _, envKey := range app.EnvironmentKeys {
-                if envKey.Environment.Name == envName {
-                    return &envKey, nil // Note the address-of operator (&) before envKey
+                // Support partial and case-insensitive matching for envName
+                if strings.Contains(strings.ToLower(envKey.Environment.Name), lcEnvName) {
+                    return &envKey, nil
                 }
             }
         }
     }
-    return nil, fmt.Errorf("environment key not found")
+    return nil, fmt.Errorf("environment key not found for app '%s' and environment '%s'", appName, envName)
 }
 
 // normalizeTag replaces underscores with spaces and converts the string to lower case.
