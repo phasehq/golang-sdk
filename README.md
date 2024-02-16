@@ -12,7 +12,7 @@ The Phase Secrets SDK provides a Go package for managing secrets in your applica
 
 | Reference syntax                  | Environment      | Path                              | Secret Key Being Referenced | Description                                                        |
 | --------------------------------- | ---------------- | --------------------------------- | --------------------------- | ------------------------------------------------------------------ |
-| `${KEY}`                          | same environment | `/                                | KEY                         | Local reference in the same environment and path root (/).         |
+| `${KEY}`                          | same environment | `/`                               | KEY                         | Local reference in the same environment and path root (/).         |
 | `${staging.DEBUG}`                | `dev`            | `/` (root of staging environment) | DEBUG                       | Cross-environment reference to a secret at the root (/).           |
 | `${prod./frontend/SECRET_KEY}`    | `prod`           | `/frontend/`                      | SECRET_KEY                  | Cross-environment reference to a secret in a specific path.        |
 | `${/backend/payments/STRIPE_KEY}` | same environment | `/backend/payments/`              | STRIPE_KEY                  | Local reference with a specified path within the same environment. |
