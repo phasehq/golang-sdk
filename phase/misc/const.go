@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	Version         = "1.1"
+	Version         = "1.0.1"
 	PhVersion       = "v1"
 	PhaseCloudAPIHost = "https://console.phase.dev"
 )
