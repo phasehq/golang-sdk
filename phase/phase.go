@@ -24,40 +24,45 @@ type Phase struct {
 }
 
 type GetSecretOptions struct {
-    EnvName   string
-    AppName   string
-    KeyToFind string
-    Tag       string
-    SecretPath string
+	EnvName    string
+	AppName    string
+	AppID      string
+	KeyToFind  string
+	Tag        string
+	SecretPath string
 }
 
 type GetAllSecretsOptions struct {
-    EnvName string
-    AppName string
-    Tag     string
-    SecretPath string
+	EnvName    string
+	AppName    string
+	AppID      string
+	Tag        string
+	SecretPath string
 }
 
 type CreateSecretsOptions struct {
-    KeyValuePairs []map[string]string
-    EnvName       string
-    AppName       string
-    SecretPath    map[string]string
+	KeyValuePairs []map[string]string
+	EnvName       string
+	AppName       string
+	AppID         string
+	SecretPath    map[string]string
 }
 
 type SecretUpdateOptions struct {
-    EnvName    string
-    AppName    string
-    Key        string
-    Value      string
-    SecretPath string
+	EnvName    string
+	AppName    string
+	AppID      string
+	Key        string
+	Value      string
+	SecretPath string
 }
 
 type DeleteSecretOptions struct {
-    EnvName     string
-    AppName     string
-    KeyToDelete string
-    SecretPath  string
+	EnvName     string
+	AppName     string
+	AppID       string
+	KeyToDelete string
+	SecretPath  string
 }
 
 // Init initializes a new instance of Phase with the provided service token, host, and debug flag.
@@ -167,31 +172,35 @@ func (p *Phase) resolveSecretValue(value string, currentEnvName string) (string,
 
 // Get fetches and decrypts a secret, resolving any secret references within its value.
 func (p *Phase) Get(opts GetSecretOptions) (*map[string]interface{}, error) {
-    // Fetch user data
-    resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
-    if err != nil {
-        if p.Debug {
-            log.Printf("Failed to fetch user data: %v", err)
-        }
-        return nil, err
-    }
-    defer resp.Body.Close()
+	// Fetch user data
+	resp, err := network.FetchPhaseUser(p.AppToken, p.Host)
+	if err != nil {
+		if p.Debug {
+			log.Printf("Failed to fetch user data: %v", err)
+		}
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-    var userData misc.AppKeyResponse
-    if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-        if p.Debug {
-            log.Printf("Failed to decode user data: %v", err)
-        }
-        return nil, err
-    }
+	var userData misc.AppKeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+		if p.Debug {
+			log.Printf("Failed to decode user data: %v", err)
+		}
+		return nil, err
+	}
 
-    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
-    if err != nil {
-        if p.Debug {
-            log.Printf("Failed to find environment key: %v", err)
-        }
-        return nil, err
-    }
+	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
+		EnvName: opts.EnvName,
+		AppName: opts.AppName,
+		AppID:   opts.AppID,
+	})
+	if err != nil {
+		if p.Debug {
+			log.Printf("Failed to find environment key: %v", err)
+		}
+		return nil, err
+	}
 
     decryptedSeed, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSeed, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {
@@ -302,14 +311,17 @@ func (p *Phase) GetAll(opts GetAllSecretsOptions) ([]map[string]interface{}, err
         return nil, err
     }
 
-    // Identify the correct environment and application
-    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
-    if err != nil {
-        if p.Debug {
-            log.Printf("Failed to find environment key: %v", err)
-        }
-        return nil, err
-    }
+	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
+		EnvName: opts.EnvName,
+		AppName: opts.AppName,
+		AppID:   opts.AppID,
+	})
+	if err != nil {
+		if p.Debug {
+			log.Printf("Failed to find environment key: %v", err)
+		}
+		return nil, err
+	}
 
     // Decrypt the wrapped seed
     decryptedSeed, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSeed, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
@@ -415,22 +427,29 @@ func (p *Phase) Create(opts CreateSecretsOptions) error {
         return err
     }
 
-    _, envID, publicKey, err := misc.PhaseGetContext(userData, opts.AppName, opts.EnvName)
-    if err != nil {
-        if p.Debug {
-            log.Printf("Failed to get context: %v", err)
-        }
-        return err
-    }
+	_, envID, publicKey, err := misc.PhaseGetContext(userData, misc.GetContextOptions{
+		AppName: opts.AppName,
+		AppID:   opts.AppID,
+		EnvName: opts.EnvName,
+	})
+	if err != nil {
+		if p.Debug {
+			log.Printf("Failed to get context: %v", err)
+		}
+		return err
+	}
 
-    // Identify the correct environment and application
-    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
-    if err != nil {
-        if p.Debug {
-            log.Printf("Failed to find environment key: %v", err)
-        }
-        return err
-    }
+	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
+		EnvName: opts.EnvName,
+		AppName: opts.AppName,
+		AppID:   opts.AppID,
+	})
+	if err != nil {
+		if p.Debug {
+			log.Printf("Failed to find environment key: %v", err)
+		}
+		return err
+	}
 
     decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {
@@ -518,13 +537,17 @@ func (p *Phase) Update(opts SecretUpdateOptions) error {
         return err
     }
 
-    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
-    if err != nil {
-        if p.Debug {
-            log.Printf("Failed to find environment key: %v", err)
-        }
-        return err
-    }
+	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
+		EnvName: opts.EnvName,
+		AppName: opts.AppName,
+		AppID:   opts.AppID,
+	})
+	if err != nil {
+		if p.Debug {
+			log.Printf("Failed to find environment key: %v", err)
+		}
+		return err
+	}
 
     decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {
@@ -625,13 +648,17 @@ func (p *Phase) Delete(opts DeleteSecretOptions) error {
         return err
     }
 
-    envKey, err := misc.FindEnvironmentKey(userData, opts.EnvName, opts.AppName)
-    if err != nil {
-        if p.Debug {
-            log.Printf("Failed to find environment key: %v", err)
-        }
-        return err
-    }
+	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
+		EnvName: opts.EnvName,
+		AppName: opts.AppName,
+		AppID:   opts.AppID,
+	})
+	if err != nil {
+		if p.Debug {
+			log.Printf("Failed to find environment key: %v", err)
+		}
+		return err
+	}
 
     decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
     if err != nil {

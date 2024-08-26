@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	Version         = "1.0"
+	Version         = "1.0.1"
 	PhVersion       = "v1"
 	PhaseCloudAPIHost = "https://console.phase.dev"
 )
@@ -21,7 +21,7 @@ var (
 	PssUserPattern    = regexp.MustCompile(`^pss_user:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$`)
 	PssServicePattern = regexp.MustCompile(`^pss_service:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$`)
 	
-    //CrossEnvPattern   = regexp.MustCompile(`\$\{(.+?)\.(.+?)\}`)
+    // CrossEnvPattern   = regexp.MustCompile(`\$\{(.+?)\.(.+?)\}`)
 	// LocalRefPattern   = regexp.MustCompile(`\$\{([^.]+?)\}`)
     
     // Regex to identify secret references
@@ -57,4 +57,16 @@ type App struct {
 type AppKeyResponse struct {
     WrappedKeyShare string `json:"wrapped_key_share"`
     Apps            []App  `json:"apps"`
+}
+
+type GetContextOptions struct {
+	AppName string
+	AppID   string
+	EnvName string
+}
+
+type FindEnvironmentKeyOptions struct {
+	EnvName string
+	AppName string
+	AppID   string
 }

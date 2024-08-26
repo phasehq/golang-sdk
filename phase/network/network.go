@@ -24,27 +24,37 @@ func ConstructHTTPHeaders(appToken string) http.Header {
     return headers
 }
 
+var customUserAgent string
+
+func SetUserAgent(ua string) {
+	customUserAgent = ua
+}
+
 func GetUserAgent() string {
-    details := []string{}
+	if customUserAgent != "" {
+		return customUserAgent
+	}
 
-    cliVersion := "phase-golang-sdk/" + misc.Version
-    details = append(details, cliVersion)
+	details := []string{}
 
-    osType := runtime.GOOS
-    architecture := runtime.GOARCH
-    details = append(details, fmt.Sprintf("%s %s", osType, architecture))
+	cliVersion := "phase-golang-sdk/" + misc.Version
+	details = append(details, cliVersion)
 
-    currentUser, err := user.Current()
-    if err == nil {
-        hostname, err := os.Hostname()
-        if err == nil {
-            userHostString := fmt.Sprintf("%s@%s", currentUser.Username, hostname)
-            details = append(details, userHostString)
-        }
-    }
+	osType := runtime.GOOS
+	architecture := runtime.GOARCH
+	details = append(details, fmt.Sprintf("%s %s", osType, architecture))
+
+	currentUser, err := user.Current()
+	if err == nil {
+		hostname, err := os.Hostname()
+		if err == nil {
+			userHostString := fmt.Sprintf("%s@%s", currentUser.Username, hostname)
+			details = append(details, userHostString)
+		}
+	}
 
     // Return only the concatenated string without "User-Agent:" prefix
-    return strings.Join(details, " ")
+	return strings.Join(details, " ")
 }
 
 func createHTTPClient() *http.Client {
