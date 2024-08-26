@@ -5,12 +5,12 @@ import (
 	"strings"
 )
 
-// phaseGetContext finds the matching application and environment, returning their IDs and the public key.
-func PhaseGetContext(userData AppKeyResponse, appName, envName string) (string, string, string, error) {
+// PhaseGetContext finds the matching application and environment, returning their IDs and the public key.
+func PhaseGetContext(userData AppKeyResponse, opts GetContextOptions) (string, string, string, error) {
 	for _, app := range userData.Apps {
-		if app.Name == appName {
+		if (opts.AppID != "" && app.ID == opts.AppID) || (opts.AppName != "" && app.Name == opts.AppName) {
 			for _, envKey := range app.EnvironmentKeys {
-				if envKey.Environment.Name == envName {
+				if envKey.Environment.Name == opts.EnvName {
 					return app.ID, envKey.Environment.ID, envKey.IdentityKey, nil
 				}
 			}
@@ -20,23 +20,21 @@ func PhaseGetContext(userData AppKeyResponse, appName, envName string) (string, 
 }
 
 // FindEnvironmentKey searches for an environment key with case-insensitive and partial matching.
-func FindEnvironmentKey(userData AppKeyResponse, envName, appName string) (*EnvironmentKey, error) {
-    // Convert envName and appName to lowercase for case-insensitive comparison
-    lcEnvName := strings.ToLower(envName)
-    lcAppName := strings.ToLower(appName)
+func FindEnvironmentKey(userData AppKeyResponse, opts FindEnvironmentKeyOptions) (*EnvironmentKey, error) {
+	lcEnvName := strings.ToLower(opts.EnvName)
+	lcAppName := strings.ToLower(opts.AppName)
 
-    for _, app := range userData.Apps {
-        // Support partial and case-insensitive matching for appName
-        if appName == "" || strings.Contains(strings.ToLower(app.Name), lcAppName) {
-            for _, envKey := range app.EnvironmentKeys {
-                // Support partial and case-insensitive matching for envName
-                if strings.Contains(strings.ToLower(envKey.Environment.Name), lcEnvName) {
-                    return &envKey, nil
-                }
-            }
-        }
-    }
-    return nil, fmt.Errorf("environment key not found for app '%s' and environment '%s'", appName, envName)
+	for _, app := range userData.Apps {
+		if (opts.AppID != "" && app.ID == opts.AppID) || 
+		   (opts.AppName != "" && (opts.AppName == "" || strings.Contains(strings.ToLower(app.Name), lcAppName))) {
+			for _, envKey := range app.EnvironmentKeys {
+				if strings.Contains(strings.ToLower(envKey.Environment.Name), lcEnvName) {
+					return &envKey, nil
+				}
+			}
+		}
+	}
+	return nil, fmt.Errorf("environment key not found for app '%s' (ID: %s) and environment '%s'", opts.AppName, opts.AppID, opts.EnvName)
 }
 
 // normalizeTag replaces underscores with spaces and converts the string to lower case.
