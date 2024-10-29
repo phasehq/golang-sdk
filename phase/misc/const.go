@@ -11,7 +11,7 @@ const (
 )
 
 var (
-	VerifySSL  = false
+	VerifySSL  = true
 	PhaseDebug = false
 )
 
