@@ -235,9 +235,9 @@ func DecryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex st
 }
 
 // Decrypt decrypts the provided ciphertext using the Phase encryption mechanism.
-func DecryptWrappedKeyShare(Keyshare1 string, Keyshare0 string, AppToken string, Keyshare1UnwrapKey string, PssUserPublicKey string, Host string) (string, error) {
+func DecryptWrappedKeyShare(Keyshare1 string, Keyshare0 string, TokenType string, AppToken string, Keyshare1UnwrapKey string, PssUserPublicKey string, Host string) (string, error) {
 	// Fetch the wrapped key share using the app token and host
-	wrappedKeyShare, err := network.FetchAppKey(AppToken, Host)
+	wrappedKeyShare, err := network.FetchAppKey(TokenType, AppToken, Host)
 	if err != nil {
 		log.Fatalf("Failed to fetch wrapped key share: %v", err)
 		return "", err
