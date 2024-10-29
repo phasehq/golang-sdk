@@ -25,8 +25,8 @@ func FindEnvironmentKey(userData AppKeyResponse, opts FindEnvironmentKeyOptions)
 	lcAppName := strings.ToLower(opts.AppName)
 
 	for _, app := range userData.Apps {
-		if (opts.AppID != "" && app.ID == opts.AppID) || 
-		   (opts.AppName != "" && (opts.AppName == "" || strings.Contains(strings.ToLower(app.Name), lcAppName))) {
+		if (opts.AppID != "" && app.ID == opts.AppID) ||
+			(opts.AppName != "" && (opts.AppName == "" || strings.Contains(strings.ToLower(app.Name), lcAppName))) {
 			for _, envKey := range app.EnvironmentKeys {
 				if strings.Contains(strings.ToLower(envKey.Environment.Name), lcEnvName) {
 					return &envKey, nil
@@ -39,17 +39,17 @@ func FindEnvironmentKey(userData AppKeyResponse, opts FindEnvironmentKeyOptions)
 
 // normalizeTag replaces underscores with spaces and converts the string to lower case.
 func normalizeTag(tag string) string {
-    return strings.ToLower(strings.Replace(tag, "_", " ", -1))
+	return strings.ToLower(strings.Replace(tag, "_", " ", -1))
 }
 
 // tagMatches checks if the user-provided tag partially matches any of the secret tags.
 func TagMatches(secretTags []string, userTag string) bool {
-    normalizedUserTag := normalizeTag(userTag)
-    for _, tag := range secretTags {
-        normalizedSecretTag := normalizeTag(tag)
-        if strings.Contains(normalizedSecretTag, normalizedUserTag) {
-            return true
-        }
-    }
-    return false
+	normalizedUserTag := normalizeTag(userTag)
+	for _, tag := range secretTags {
+		normalizedSecretTag := normalizeTag(tag)
+		if strings.Contains(normalizedSecretTag, normalizedUserTag) {
+			return true
+		}
+	}
+	return false
 }

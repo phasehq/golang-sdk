@@ -122,19 +122,19 @@ func EncryptAsymmetric(plaintext, publicKeyHex string) (string, error) {
 		return "", err
 	}
 
-    // Spin up ephemeral X25519 keys
+	// Spin up ephemeral X25519 keys
 	kp, err := RandomKeyPair()
 	if err != nil {
 		return "", err
 	}
 
-    // Perform a DHKA
+	// Perform a DHKA
 	sessionKeys, err := ClientSessionKeys(kp, recipientPubKeyBytes)
 	if err != nil {
 		return "", err
 	}
 
-    // Encrypt data with XChaCha20-poly1305
+	// Encrypt data with XChaCha20-poly1305
 	ciphertext, err := EncryptB64(plaintext, sessionKeys.Tx)
 	if err != nil {
 		return "", err
@@ -145,93 +145,93 @@ func EncryptAsymmetric(plaintext, publicKeyHex string) (string, error) {
 }
 
 func DecryptAsymmetric(ciphertextString, privateKeyHex, publicKeyHex string) (string, error) {
-    segments := strings.Split(ciphertextString, ":")
+	segments := strings.Split(ciphertextString, ":")
 
-    version := segments[1]
-    if version != "v1" {
-        err := fmt.Errorf("unsupported version: %s", version)
-        log.Println(err)
-        return "", err
-    }
+	version := segments[1]
+	if version != "v1" {
+		err := fmt.Errorf("unsupported version: %s", version)
+		log.Println(err)
+		return "", err
+	}
 
-    ephemeralPublicKeyBytes, err := hex.DecodeString(segments[2])
-    if err != nil {
-        log.Printf("Failed to decode ephemeral public key hex: %v\n", err)
-        return "", err
-    }
+	ephemeralPublicKeyBytes, err := hex.DecodeString(segments[2])
+	if err != nil {
+		log.Printf("Failed to decode ephemeral public key hex: %v\n", err)
+		return "", err
+	}
 
-    privateKeyBytes, err := hex.DecodeString(privateKeyHex)
-    if err != nil {
-        log.Printf("Failed to decode private key hex: %v\n", err)
-        return "", err
-    }
+	privateKeyBytes, err := hex.DecodeString(privateKeyHex)
+	if err != nil {
+		log.Printf("Failed to decode private key hex: %v\n", err)
+		return "", err
+	}
 
-    publicKeyBytes, err := hex.DecodeString(publicKeyHex)
-    if err != nil {
-        log.Printf("Failed to decode public key hex: %v\n", err)
-        return "", err
-    }
+	publicKeyBytes, err := hex.DecodeString(publicKeyHex)
+	if err != nil {
+		log.Printf("Failed to decode public key hex: %v\n", err)
+		return "", err
+	}
 
-    kp := sodium.KXKP{
-        PublicKey: sodium.KXPublicKey{Bytes: publicKeyBytes},
-        SecretKey: sodium.KXSecretKey{Bytes: privateKeyBytes},
-    }
+	kp := sodium.KXKP{
+		PublicKey: sodium.KXPublicKey{Bytes: publicKeyBytes},
+		SecretKey: sodium.KXSecretKey{Bytes: privateKeyBytes},
+	}
 
-    // Perform DHKA
-    sessionKeys, err := ServerSessionKeys(kp, ephemeralPublicKeyBytes)
-    if err != nil {
-        return "", err
-    }
+	// Perform DHKA
+	sessionKeys, err := ServerSessionKeys(kp, ephemeralPublicKeyBytes)
+	if err != nil {
+		return "", err
+	}
 
-    // Extract ciphertext from ph.
-    ciphertextB64 := segments[3]
+	// Extract ciphertext from ph.
+	ciphertextB64 := segments[3]
 
-    // Decrypt data with XChaCha20-poly1305
-    plaintext, err := DecryptB64(ciphertextB64, sessionKeys.Rx)
-    if err != nil {
-        log.Printf("Failed to decrypt asymmetrically: %v\n", err)
-        return "", err
-    }
-    return plaintext, nil
+	// Decrypt data with XChaCha20-poly1305
+	plaintext, err := DecryptB64(ciphertextB64, sessionKeys.Rx)
+	if err != nil {
+		log.Printf("Failed to decrypt asymmetrically: %v\n", err)
+		return "", err
+	}
+	return plaintext, nil
 }
 
 // decryptSecret decrypts a secret's key, value, and optional comment using asymmetric decryption.
 func DecryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex string) (decryptedKey string, decryptedValue string, decryptedComment string, err error) {
-    // Decrypt the key
-    key, ok := secret["key"].(string)
-    if !ok {
-        err = fmt.Errorf("key is not a string")
-        return
-    }
-    decryptedKey, err = DecryptAsymmetric(key, privateKeyHex, publicKeyHex)
-    if err != nil {
-        log.Printf("Failed to decrypt key: %v\n", err)
-        return
-    }
+	// Decrypt the key
+	key, ok := secret["key"].(string)
+	if !ok {
+		err = fmt.Errorf("key is not a string")
+		return
+	}
+	decryptedKey, err = DecryptAsymmetric(key, privateKeyHex, publicKeyHex)
+	if err != nil {
+		log.Printf("Failed to decrypt key: %v\n", err)
+		return
+	}
 
-    // Decrypt the value
-    value, ok := secret["value"].(string)
-    if !ok {
-        err = fmt.Errorf("value is not a string")
-        return
-    }
-    decryptedValue, err = DecryptAsymmetric(value, privateKeyHex, publicKeyHex)
-    if err != nil {
-        log.Printf("Failed to decrypt value: %v\n", err)
-        return
-    }
+	// Decrypt the value
+	value, ok := secret["value"].(string)
+	if !ok {
+		err = fmt.Errorf("value is not a string")
+		return
+	}
+	decryptedValue, err = DecryptAsymmetric(value, privateKeyHex, publicKeyHex)
+	if err != nil {
+		log.Printf("Failed to decrypt value: %v\n", err)
+		return
+	}
 
-    // Decrypt the comment if it exists
-    comment, ok := secret["comment"].(string)
-    if ok && comment != "" {
-        decryptedComment, err = DecryptAsymmetric(comment, privateKeyHex, publicKeyHex)
-        if err != nil {
-            log.Printf("Failed to decrypt comment: %v\n", err)
-            err = nil
-        }
-    }
+	// Decrypt the comment if it exists
+	comment, ok := secret["comment"].(string)
+	if ok && comment != "" {
+		decryptedComment, err = DecryptAsymmetric(comment, privateKeyHex, publicKeyHex)
+		if err != nil {
+			log.Printf("Failed to decrypt comment: %v\n", err)
+			err = nil
+		}
+	}
 
-    return decryptedKey, decryptedValue, decryptedComment, nil
+	return decryptedKey, decryptedValue, decryptedComment, nil
 }
 
 // Decrypt decrypts the provided ciphertext using the Phase encryption mechanism.
@@ -293,23 +293,22 @@ func GenerateEnvKeyPair(seed string) (publicKeyHex, privateKeyHex string, err er
 		return "", "", fmt.Errorf("incorrect seed length: expected 32 bytes, got %d", len(seedBytes))
 	}
 
-    // Prepare the seed as KXSeed
-    var seedKX sodium.KXSeed
-    copy(seedKX.Bytes[:], seedBytes)
+	// Prepare the seed as KXSeed
+	var seedKX sodium.KXSeed
+	copy(seedKX.Bytes[:], seedBytes)
 
 	// Allocate slice if KXSeed.Bytes is a slice
 	seedKX.Bytes = make([]byte, len(seedBytes))
 	copy(seedKX.Bytes, seedBytes)
 
-    // Generate key pair from seed
-    keyPair := sodium.SeedKXKP(seedKX)
+	// Generate key pair from seed
+	keyPair := sodium.SeedKXKP(seedKX)
 
-    publicKeyHex = hex.EncodeToString(keyPair.PublicKey.Bytes[:])
-    privateKeyHex = hex.EncodeToString(keyPair.SecretKey.Bytes[:])
+	publicKeyHex = hex.EncodeToString(keyPair.PublicKey.Bytes[:])
+	privateKeyHex = hex.EncodeToString(keyPair.SecretKey.Bytes[:])
 
-    return publicKeyHex, privateKeyHex, nil
+	return publicKeyHex, privateKeyHex, nil
 }
-
 
 // Blake2bDigest generates a BLAKE2b hash of the input string with a salt using the sodium library.
 func Blake2bDigest(inputStr, salt string) (string, error) {
