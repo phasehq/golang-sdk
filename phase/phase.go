@@ -68,27 +68,44 @@ type DeleteSecretOptions struct {
 
 // Init initializes a new instance of Phase with the provided service token, host, and debug flag.
 func Init(serviceToken, host string, debug bool) *Phase {
-	// Validate the service token against the pattern.
-	matches := misc.PssServicePattern.FindStringSubmatch(serviceToken)
-	if matches == nil || len(matches) != 6 {
+
+	// Validate the service token against the pattern
+	serviceMatches := misc.PssServicePattern.FindStringSubmatch(serviceToken)
+	userMatches := misc.PssUserPattern.FindStringSubmatch(serviceToken)
+
+	// Check if it's a valid service token
+	if serviceMatches == nil || len(serviceMatches) != 6 {
+		if userMatches != nil {
+			log.Fatalf("Error: User token provided. Expected service token.")
+		}
 		log.Fatalf("Error: Invalid Phase Service Token.")
 	}
 
-	// Use default host if none is specified.
+	// Use Phase Cloud if no host is provided
 	if host == "" {
 		host = misc.PhaseCloudAPIHost
 	}
 
-	// Create a new Phase instance with parsed service token components and debug flag.
+	// Get version from regex group 1 (the capture group for 'v(\d+)')
+	version := serviceMatches[1] // This will be "2" for v2 tokens
+
+	// Determine token type based on version
+	tokenType := "Service"
+	if version == "2" {
+		tokenType = "ServiceAccount"
+	}
+
+	// Create a new Phase instance with parsed service token components and debug flag
 	return &Phase{
 		Prefix:             "pss_service",
-		PesVersion:         matches[1],
-		AppToken:           matches[2],
-		PssUserPublicKey:   matches[3],
-		Keyshare0:          matches[4],
-		Keyshare1UnwrapKey: matches[5],
+		PesVersion:         "v" + version,
+		AppToken:           serviceMatches[2],
+		PssUserPublicKey:   serviceMatches[3],
+		Keyshare0:          serviceMatches[4],
+		Keyshare1UnwrapKey: serviceMatches[5],
 		Host:               host,
 		Debug:              debug,
+		TokenType:          tokenType,
 	}
 }
 
