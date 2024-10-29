@@ -21,6 +21,7 @@ type Phase struct {
 	Keyshare1UnwrapKey string
 	Host               string
 	Debug              bool
+	TokenType          string
 }
 
 type GetSecretOptions struct {
