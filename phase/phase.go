@@ -109,8 +109,53 @@ func Init(serviceToken, host string, debug bool) *Phase {
 	}
 }
 
+// resolveSecretReference parses and resolves a secret reference to its actual value.
+//
+// The function supports multiple reference formats:
+//
+// 1. Local Reference (Root Path):
+//    Syntax: `KEY`
+//    - Environment: Same as the current environment.
+//    - Path: Root path (`/`).
+//    - Secret Key: `KEY`
+//
+// 2. Local Reference (Specified Path):
+//    Syntax: `/backend/payments/STRIPE_KEY`
+//    - Environment: Same as the current environment.
+//    - Path: Specified path (`/backend/payments/`).
+//    - Secret Key: `STRIPE_KEY`
+//
+// 3. Cross-Environment Reference (Root Path):
+//    Syntax: `staging.DEBUG`
+//    - Environment: Different environment (e.g., `staging`).
+//    - Path: Root path (`/`).
+//    - Secret Key: `DEBUG`
+//
+// 4. Cross-Environment Reference (Specific Path):
+//    Syntax: `prod./frontend/SECRET_KEY`
+//    - Environment: Different environment (e.g., `prod`).
+//    - Path: Specified path (`/frontend/`).
+//    - Secret Key: `SECRET_KEY`
+//
+// 5. Cross-Application Reference:
+//    Syntax: `backend_api::production./frontend/SECRET_KEY`
+//    - Application: Different application (e.g., `backend_api`).
+//    - Environment: Different environment (e.g., `production`).
+//    - Path: Specified path (`/frontend/`).
+//    - Secret Key: `SECRET_KEY`
 func (p *Phase) resolveSecretReference(ref, currentEnvName string) (string, error) {
-	var envName, path, keyName string
+	var appName, envName, path, keyName string
+
+	// Default app name is empty, meaning current app
+	appName = ""
+
+	// Check if this is a cross-application reference (contains "::")
+	if strings.Contains(ref, "::") {
+		// Split on the first :: to differentiate application from environment/path/key
+		parts := strings.SplitN(ref, "::", 2)
+		appName = parts[0]
+		ref = parts[1] // Update ref to be everything after the app name
+	}
 
 	// Check if the reference starts with an environment name followed by a dot
 	if strings.Contains(ref, ".") {
@@ -148,7 +193,7 @@ func (p *Phase) resolveSecretReference(ref, currentEnvName string) (string, erro
 	// Fetch and decrypt the referenced secret
 	opts := GetSecretOptions{
 		EnvName:    envName,
-		AppName:    "", // AppName is available globally
+		AppName:    appName,
 		KeyToFind:  keyName,
 		SecretPath: path,
 	}
@@ -167,6 +212,13 @@ func (p *Phase) resolveSecretReference(ref, currentEnvName string) (string, erro
 }
 
 // resolveSecretValue resolves all secret references in a given value string.
+//
+// This function identifies and resolves all secret references embedded within a string.
+// It supports references in the format ${...} where the content inside the braces 
+// follows the syntax described in resolveSecretReference, including:
+// - Local references: ${KEY} or ${/path/to/KEY}
+// - Cross-environment references: ${env.KEY} or ${env./path/to/KEY}
+// - Cross-application references: ${app::env.KEY} or ${app::env./path/to/KEY}
 func (p *Phase) resolveSecretValue(value string, currentEnvName string) (string, error) {
 	refs := misc.SecretRefRegex.FindAllString(value, -1)
 	resolvedValue := value
