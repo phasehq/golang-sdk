@@ -10,12 +10,13 @@ The Phase Secrets SDK provides a Go package for managing secrets in your applica
 
 ### Secret Referencing Syntax
 
-| Reference Syntax                  | Environment      | Path                              | Secret Key            | Description                                                 |
-|-----------------------------------|------------------|-----------------------------------|------------------------|-------------------------------------------------------------|
-| `${KEY}`                          | Same environment | `/`                               | KEY                   | Local reference in the same environment and root path (/).  |
-| `${staging.DEBUG}`                | `staging`        | `/` (root of staging environment) | DEBUG                 | Cross-environment reference to a secret at the root (/).    |
-| `${prod./frontend/SECRET_KEY}`    | `prod`           | `/frontend/`                      | SECRET_KEY            | Cross-environment reference to a secret in a specific path. |
-| `${/backend/payments/STRIPE_KEY}` | Same environment | `/backend/payments/`              | STRIPE_KEY            | Local reference with a specified path.                      |
+| Reference Syntax                           | Application      | Environment      | Path                              | Secret Key            | Description                                                 |
+|-------------------------------------------|------------------|------------------|-----------------------------------|------------------------|-------------------------------------------------------------|
+| `${KEY}`                                   | Same application | Same environment | `/`                               | KEY                   | Local reference in the same environment and root path (/).  |
+| `${staging.DEBUG}`                         | Same application | `staging`        | `/` (root of staging environment) | DEBUG                 | Cross-environment reference to a secret at the root (/).    |
+| `${prod./frontend/SECRET_KEY}`             | Same application | `prod`           | `/frontend/`                      | SECRET_KEY            | Cross-environment reference to a secret in a specific path. |
+| `${/backend/payments/STRIPE_KEY}`          | Same application | Same environment | `/backend/payments/`              | STRIPE_KEY            | Local reference with a specified path.                      |
+| `${backend_api::production./frontend/KEY}` | `backend_api`    | `production`     | `/frontend/`                      | KEY                   | Cross-application reference to a secret in a specific path. |
 
 ## Installation
 
