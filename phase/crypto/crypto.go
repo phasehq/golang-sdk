@@ -1,94 +1,153 @@
 package crypto
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
 
-	"github.com/jamesruan/sodium"
 	"github.com/phasehq/golang-sdk/phase/network"
+	"golang.org/x/crypto/blake2b"
+	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/crypto/curve25519"
 )
 
-// Spin up an ephemeral X25519 keypair
-func RandomKeyPair() (sodium.KXKP, error) {
-	kp := sodium.MakeKXKP()
-	return kp, nil
+// X25519 key pair for key exchange.
+type KeyPair struct {
+	PublicKey [32]byte
+	SecretKey [32]byte
 }
 
-// ClientSessionKeys generates client session keys given a client's ephemeral keypair and the recipient's public key.
-func ClientSessionKeys(kp sodium.KXKP, recipientPublicKey []byte) (*sodium.KXSessionKeys, error) {
-	recipientPubKey := sodium.KXPublicKey{Bytes: recipientPublicKey}
-	sessionKeys, err := kp.ClientSessionKeys(recipientPubKey)
-	if err != nil {
-		log.Printf("Failed to generate client session keys: %v\n", err)
-		return nil, err
+// SessionKeys for XChaCha20-Poly1305 encryption/decryption.
+type SessionKeys struct {
+	Rx [32]byte // Rx key
+	Tx [32]byte // Tx key
+}
+
+// Ephemeral for X25519 key exchange.
+func RandomKeyPair() (KeyPair, error) {
+	var secret, public [32]byte
+
+	// Generate random secret key
+	if _, err := rand.Read(secret[:]); err != nil {
+		return KeyPair{}, fmt.Errorf("failed to generate random key: %w", err)
 	}
-	return sessionKeys, nil
+
+	// Derive pk from sk key
+	curve25519.ScalarBaseMult(&public, &secret)
+
+	return KeyPair{PublicKey: public, SecretKey: secret}, nil
+}
+
+// ClientSessionKeys generates client session keys given a client's keypair and the server's public key.
+func ClientSessionKeys(kp KeyPair, serverPublicKey []byte) (SessionKeys, error) {
+	if len(serverPublicKey) != 32 {
+		return SessionKeys{}, fmt.Errorf("server public key must be 32 bytes, got %d", len(serverPublicKey))
+	}
+
+	// Perform X25519 ECDH
+	shared, err := curve25519.X25519(kp.SecretKey[:], serverPublicKey)
+	if err != nil {
+		return SessionKeys{}, fmt.Errorf("failed to compute shared secret: %w", err)
+	}
+
+	// BLAKE2b-512(shared_secret || client_pk || server_pk)
+	h, err := blake2b.New512(nil)
+	if err != nil {
+		return SessionKeys{}, fmt.Errorf("failed to create blake2b hasher: %w", err)
+	}
+	h.Write(shared)
+	h.Write(kp.PublicKey[:])
+	h.Write(serverPublicKey)
+	digest := h.Sum(nil)
+
+	var keys SessionKeys
+	copy(keys.Rx[:], digest[:32])
+	copy(keys.Tx[:], digest[32:64])
+
+	return keys, nil
 }
 
 // ServerSessionKeys generates server session keys given the server's keypair and the client's public key.
-func ServerSessionKeys(kp sodium.KXKP, clientPublicKey []byte) (*sodium.KXSessionKeys, error) {
-	clientPubKey := sodium.KXPublicKey{Bytes: clientPublicKey}
-	sessionKeys, err := kp.ServerSessionKeys(clientPubKey)
-	if err != nil {
-		log.Printf("Failed to generate server session keys: %v\n", err)
-		return nil, err
+func ServerSessionKeys(kp KeyPair, clientPublicKey []byte) (SessionKeys, error) {
+	if len(clientPublicKey) != 32 {
+		return SessionKeys{}, fmt.Errorf("client public key must be 32 bytes, got %d", len(clientPublicKey))
 	}
-	return sessionKeys, nil
+
+	// Perform X25519 ECDH
+	shared, err := curve25519.X25519(kp.SecretKey[:], clientPublicKey)
+	if err != nil {
+		return SessionKeys{}, fmt.Errorf("failed to compute shared secret: %w", err)
+	}
+
+	// BLAKE2b-512(shared_secret || client_pk || server_pk)
+	h, err := blake2b.New512(nil)
+	if err != nil {
+		return SessionKeys{}, fmt.Errorf("failed to create blake2b hasher: %w", err)
+	}
+	h.Write(shared)
+	h.Write(clientPublicKey)
+	h.Write(kp.PublicKey[:])
+	digest := h.Sum(nil)
+
+	// Server swaps Rx and Tx compared to client
+	var keys SessionKeys
+	copy(keys.Rx[:], digest[32:64])
+	copy(keys.Tx[:], digest[:32])
+
+	return keys, nil
 }
 
-// EncryptRaw encrypts plaintext using the given session key with XChaCha20Poly1305.
-func EncryptRaw(plaintext string, txKey sodium.KXSessionKey) ([]byte, error) {
-	// Convert txKey to a suitable format for XChaCha20Poly1305 encryption.
-	aeadKey := sodium.AEADXCPKey{Bytes: txKey.Bytes}
+// EncryptRaw encrypts plaintext using the given session key with XChaCha20-Poly1305.
+func EncryptRaw(plaintext string, txKey [32]byte) ([]byte, error) {
+	aead, err := chacha20poly1305.NewX(txKey[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to create XChaCha20-Poly1305 cipher: %w", err)
+	}
 
-	// Generate a 192 bit random nonce for XChaCha20Poly1305.
-	var nonce sodium.AEADXCPNonce
-	sodium.Randomize(&nonce)
+	// Generate a random 24-byte nonce
+	nonce := make([]byte, chacha20poly1305.NonceSizeX)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("failed to generate nonce: %w", err)
+	}
 
-	// Convert plaintext to sodium.Bytes for encryption.
-	plaintextBytes := sodium.Bytes(plaintext)
-
-	// Encrypt the plaintext using XChaCha20Poly1305 with the derived key and nonce.
-	ciphertext := plaintextBytes.AEADXCPEncrypt(sodium.Bytes(nil), nonce, aeadKey)
-
-	// Append the nonce to the ciphertext.
-	return append(ciphertext, nonce.Bytes...), nil
+	// Encrypt the plaintext
+	ciphertext := aead.Seal(nil, nonce, []byte(plaintext), nil)
+	return append(ciphertext, nonce...), nil
 }
 
-// DecryptRaw decrypts the combined nonce and ciphertext using the given key.
-func DecryptRaw(combinedCt []byte, rxKey sodium.KXSessionKey) ([]byte, error) {
-	nonceSize := sodium.AEADXCPNonce{}.Size()
+// DecryptRaw decrypts the combined ciphertext and nonce using the given key.
+func DecryptRaw(combinedCt []byte, rxKey [32]byte) ([]byte, error) {
+	nonceSize := chacha20poly1305.NonceSizeX
 
-	// Extract the nonce from the end of the combined data.
+	if len(combinedCt) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	// Extract the nonce from the end of the combined data
 	nonceStartIndex := len(combinedCt) - nonceSize
-	nonceBytes := combinedCt[nonceStartIndex:]
+	nonce := combinedCt[nonceStartIndex:]
 	ciphertext := combinedCt[:nonceStartIndex]
 
-	// Convert the session key to the format expected for decryption.
-	aeadKey := sodium.AEADXCPKey{Bytes: rxKey.Bytes}
-
-	// Initialize the nonce with the extracted bytes.
-	var nonce sodium.AEADXCPNonce
-	if len(nonce.Bytes) < nonceSize {
-		nonce.Bytes = make([]byte, nonceSize)
+	aead, err := chacha20poly1305.NewX(rxKey[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to create XChaCha20-Poly1305 cipher: %w", err)
 	}
-	copy(nonce.Bytes, nonceBytes)
 
-	// Decrypt the ciphertext using XChaCha20Poly1305 with the derived key and extracted nonce.
-	plaintextBytes, err := sodium.Bytes(ciphertext).AEADXCPDecrypt(sodium.Bytes(nil), nonce, aeadKey)
+	// Decrypt the ciphertext
+	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		log.Printf("Failed to decrypt: %v", err)
 		return nil, err
 	}
 
-	return plaintextBytes, nil
+	return plaintext, nil
 }
 
 // EncryptB64 encrypts the plaintext using the given key and returns a base64 encoded string.
-func EncryptB64(plaintext string, key sodium.KXSessionKey) (string, error) {
+func EncryptB64(plaintext string, key [32]byte) (string, error) {
 	rawCt, err := EncryptRaw(plaintext, key)
 	if err != nil {
 		log.Printf("Failed to encrypt to base64: %v\n", err)
@@ -99,7 +158,7 @@ func EncryptB64(plaintext string, key sodium.KXSessionKey) (string, error) {
 }
 
 // DecryptB64 decrypts a base64 encoded ciphertext using the given key and returns the original plaintext.
-func DecryptB64(b64Ct string, key sodium.KXSessionKey) (string, error) {
+func DecryptB64(b64Ct string, key [32]byte) (string, error) {
 	ct, err := base64.StdEncoding.DecodeString(b64Ct)
 	if err != nil {
 		log.Printf("Failed to decode base64 ciphertext: %v\n", err)
@@ -134,16 +193,17 @@ func EncryptAsymmetric(plaintext, publicKeyHex string) (string, error) {
 		return "", err
 	}
 
-	// Encrypt data with XChaCha20-poly1305
+	// Encrypt data with XChaCha20-Poly1305
 	ciphertext, err := EncryptB64(plaintext, sessionKeys.Tx)
 	if err != nil {
 		return "", err
 	}
 
-	result := fmt.Sprintf("ph:v1:%s:%s", hex.EncodeToString(kp.PublicKey.Bytes), ciphertext)
+	result := fmt.Sprintf("ph:v1:%s:%s", hex.EncodeToString(kp.PublicKey[:]), ciphertext)
 	return result, nil
 }
 
+// DecryptAsymmetric decrypts a ciphertext string using the provided private and public keys.
 func DecryptAsymmetric(ciphertextString, privateKeyHex, publicKeyHex string) (string, error) {
 	segments := strings.Split(ciphertextString, ":")
 
@@ -172,10 +232,9 @@ func DecryptAsymmetric(ciphertextString, privateKeyHex, publicKeyHex string) (st
 		return "", err
 	}
 
-	kp := sodium.KXKP{
-		PublicKey: sodium.KXPublicKey{Bytes: publicKeyBytes},
-		SecretKey: sodium.KXSecretKey{Bytes: privateKeyBytes},
-	}
+	var kp KeyPair
+	copy(kp.PublicKey[:], publicKeyBytes)
+	copy(kp.SecretKey[:], privateKeyBytes)
 
 	// Perform DHKA
 	sessionKeys, err := ServerSessionKeys(kp, ephemeralPublicKeyBytes)
@@ -186,7 +245,7 @@ func DecryptAsymmetric(ciphertextString, privateKeyHex, publicKeyHex string) (st
 	// Extract ciphertext from ph.
 	ciphertextB64 := segments[3]
 
-	// Decrypt data with XChaCha20-poly1305
+	// Decrypt data with XChaCha20-Poly1305
 	plaintext, err := DecryptB64(ciphertextB64, sessionKeys.Rx)
 	if err != nil {
 		log.Printf("Failed to decrypt asymmetrically: %v\n", err)
@@ -195,7 +254,7 @@ func DecryptAsymmetric(ciphertextString, privateKeyHex, publicKeyHex string) (st
 	return plaintext, nil
 }
 
-// decryptSecret decrypts a secret's key, value, and optional comment using asymmetric decryption.
+// DecryptSecret decrypts a secret's key, value, and optional comment using asymmetric decryption.
 func DecryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex string) (decryptedKey string, decryptedValue string, decryptedComment string, err error) {
 	// Decrypt the key
 	key, ok := secret["key"].(string)
@@ -234,7 +293,7 @@ func DecryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex st
 	return decryptedKey, decryptedValue, decryptedComment, nil
 }
 
-// Decrypt decrypts the provided ciphertext using the Phase encryption mechanism.
+// DecryptWrappedKeyShare decrypts the provided ciphertext using the Phase encryption mechanism.
 func DecryptWrappedKeyShare(Keyshare1 string, Keyshare0 string, TokenType string, AppToken string, Keyshare1UnwrapKey string, PssUserPublicKey string, Host string) (string, error) {
 	// Fetch the wrapped key share using the app token and host
 	wrappedKeyShare, err := network.FetchAppKey(TokenType, AppToken, Host)
@@ -243,7 +302,7 @@ func DecryptWrappedKeyShare(Keyshare1 string, Keyshare0 string, TokenType string
 		return "", err
 	}
 
-	// Decode the wrapped key share from hex, not base64
+	// Decode the wrapped key share from hex
 	wrappedKeyShareBytes, err := hex.DecodeString(wrappedKeyShare)
 	if err != nil {
 		log.Fatalf("Failed to decode wrapped key share from hex: %v", err)
@@ -256,12 +315,15 @@ func DecryptWrappedKeyShare(Keyshare1 string, Keyshare0 string, TokenType string
 		log.Fatalf("Failed to decode Keyshare1UnwrapKey from hex: %v", err)
 		return "", err
 	}
-	if len(keyshare1UnwrapKeyBytes) != 32 { // Sodium expects a 32-byte key
+	if len(keyshare1UnwrapKeyBytes) != 32 {
 		log.Fatalf("Incorrect Keyshare1UnwrapKey size: expected 32 bytes, got %d", len(keyshare1UnwrapKeyBytes))
-		return "", err
+		return "", fmt.Errorf("incorrect Keyshare1UnwrapKey size: expected 32 bytes, got %d", len(keyshare1UnwrapKeyBytes))
 	}
 
-	keyshare1, err := DecryptRaw(wrappedKeyShareBytes, sodium.KXSessionKey{Bytes: keyshare1UnwrapKeyBytes})
+	var unwrapKey [32]byte
+	copy(unwrapKey[:], keyshare1UnwrapKeyBytes)
+
+	keyshare1, err := DecryptRaw(wrappedKeyShareBytes, unwrapKey)
 	if err != nil {
 		log.Fatalf("Failed to decrypt wrapped key share: %v", err)
 		return "", err
@@ -284,6 +346,7 @@ func DecryptWrappedKeyShare(Keyshare1 string, Keyshare0 string, TokenType string
 	return plaintext, nil
 }
 
+// GenerateEnvKeyPair for X25519 key pair from a hex-encoded seed.
 func GenerateEnvKeyPair(seed string) (publicKeyHex, privateKeyHex string, err error) {
 	seedBytes, err := hex.DecodeString(seed)
 	if err != nil {
@@ -293,48 +356,44 @@ func GenerateEnvKeyPair(seed string) (publicKeyHex, privateKeyHex string, err er
 		return "", "", fmt.Errorf("incorrect seed length: expected 32 bytes, got %d", len(seedBytes))
 	}
 
-	// Prepare the seed as KXSeed
-	var seedKX sodium.KXSeed
-	copy(seedKX.Bytes[:], seedBytes)
+	h, err := blake2b.New(32, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create blake2b hasher: %w", err)
+	}
+	h.Write(seedBytes)
+	secret := h.Sum(nil)
 
-	// Allocate slice if KXSeed.Bytes is a slice
-	seedKX.Bytes = make([]byte, len(seedBytes))
-	copy(seedKX.Bytes, seedBytes)
+	// Derive public key from secret key
+	var secretArr, public [32]byte
+	copy(secretArr[:], secret)
+	curve25519.ScalarBaseMult(&public, &secretArr)
 
-	// Generate key pair from seed
-	keyPair := sodium.SeedKXKP(seedKX)
-
-	publicKeyHex = hex.EncodeToString(keyPair.PublicKey.Bytes[:])
-	privateKeyHex = hex.EncodeToString(keyPair.SecretKey.Bytes[:])
+	publicKeyHex = hex.EncodeToString(public[:])
+	privateKeyHex = hex.EncodeToString(secretArr[:])
 
 	return publicKeyHex, privateKeyHex, nil
 }
 
-// Blake2bDigest generates a BLAKE2b hash of the input string with a salt using the sodium library.
+// Blake2bDigest generates a BLAKE2b-256 hash of the input string with an optional key (salt).
 func Blake2bDigest(inputStr, salt string) (string, error) {
-	hashSize := 32 // 32 bytes (256 bits) as an example
-	var hasher *sodium.GenericHash
+	var h [32]byte
+
 	if len(salt) > 0 {
-		// Convert the salt string to a GenericHashKey.
-		key := sodium.GenericHashKey{Bytes: sodium.Bytes([]byte(salt))}
-		hasher = sodium.NewGenericHashKeyed(hashSize, key).(*sodium.GenericHash)
+		// Use keyed BLAKE2b
+		hasher, err := blake2b.New256([]byte(salt))
+		if err != nil {
+			log.Printf("Failed to create keyed BLAKE2b hasher: %v\n", err)
+			return "", err
+		}
+		hasher.Write([]byte(inputStr))
+		sum := hasher.Sum(nil)
+		copy(h[:], sum)
 	} else {
-		hasher = sodium.NewGenericHash(hashSize).(*sodium.GenericHash)
+		// Use unkeyed BLAKE2b
+		h = blake2b.Sum256([]byte(inputStr))
 	}
 
-	// Write the input string to the hasher.
-	_, err := hasher.Write([]byte(inputStr))
-	if err != nil {
-		log.Printf("Failed to write to BLAKE2b hasher: %v\n", err)
-		return "", err
-	}
-
-	// Compute the hash.
-	hashed := hasher.Sum(nil)
-
-	// Encode the hash to a hexadecimal string.
-	hexEncoded := hex.EncodeToString(hashed)
-	return hexEncoded, nil
+	return hex.EncodeToString(h[:]), nil
 }
 
 // Assemble the shares together into a secret XORBytes
