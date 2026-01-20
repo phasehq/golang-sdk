@@ -2,4 +2,6 @@ module github.com/phasehq/golang-sdk
 
 go 1.20
 
-require github.com/jamesruan/sodium v1.0.14
+require golang.org/x/crypto v0.31.0
+
+require golang.org/x/sys v0.28.0 // indirect

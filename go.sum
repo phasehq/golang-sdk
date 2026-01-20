@@ -1,2 +1,4 @@
-github.com/jamesruan/sodium v1.0.14 h1:JfOHobip/lUWouxHV3PwYwu3gsLewPrDrZXO3HuBzUU=
-github.com/jamesruan/sodium v1.0.14/go.mod h1:GK2+LACf7kuVQ9k7Irk0MB2B65j5rVqkz+9ylGIggZk=
+golang.org/x/crypto v0.31.0 h1:ihbySMvVjLAeSH1IbfcRTkD/iNscyz8rGzjF/E5hV6U=
+golang.org/x/crypto v0.31.0/go.mod h1:kDsLvtWBEx7MV9tJOj9bnXsPbxwJQ6csT/x4KIN4Ssk=
+golang.org/x/sys v0.28.0 h1:Fksou7UEQUWlKvIdsqzJmUmCX3cZuD2+P3XyyzwMhlA=
+golang.org/x/sys v0.28.0/go.mod h1:/VUhepiaJMQUp4+oa/7Zr1D23ma6VTLIYjOOTFZPUcA=
