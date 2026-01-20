@@ -7,6 +7,7 @@ The Phase Secrets SDK provides a Go package for managing secrets in your applica
 - End-to-end encrypted secret CRUD operations
 - Cross-environment and local environment secret referencing
 - Bulk secret operations
+- Pure Golang (No CGO)
 
 ### Secret Referencing Syntax
 
@@ -19,51 +20,6 @@ The Phase Secrets SDK provides a Go package for managing secrets in your applica
 | `${backend_api::production./frontend/KEY}` | `backend_api`    | `production`     | `/frontend/`                      | KEY                   | Cross-application reference to a secret in a specific path. |
 
 ## Installation
-
-This SDK uses the `sodium` package to perform cryptographic operations, on most system you will need to install the `libsodium` library as a system dependency. Here's how you can install `libsodium` or its development packages on different platforms, including macOS, Ubuntu, Debian, Arch Linux, Alpine Linux, and Windows.
-
-This SDK uses the `sodium` package for cryptographic operations. On most systems, you'll need to install the `libsodium` library as a system dependency.
-
-#### macOS
-```sh
-brew install libsodium
-```
-
-#### Fedora
-```sh
-sudo dnf install libsodium-devel
-```
-
-#### Ubuntu and Debian
-```sh
-sudo apt-get update && sudo apt-get install libsodium-dev
-```
-
-#### Arch Linux
-```sh
-sudo pacman -Syu libsodium
-```
-
-#### Alpine Linux
-```sh
-sudo apk add libsodium-dev
-```
-
-#### Windows
-For Windows, download pre-built binaries from the [libsodium GitHub releases page](https://github.com/jedisct1/libsodium/releases). Choose the appropriate version for your system architecture and follow the included instructions.
-
-On Windows, the process is a bit different due to the variety of development environments. However, you can download pre-built binaries from the official [libsodium GitHub releases page](https://github.com/jedisct1/libsodium/releases). Choose the appropriate version for your system architecture (e.g., Win32 or Win64), download it, and follow the instructions included to integrate `libsodium` with your development environment. For development with Visual Studio, you'll typically include the header files and link against the `libsodium.lib` or `libsodium.dll` file.
-
-If you're using a package manager like `vcpkg` or `chocolatey`, you can also find `libsodium` packages available for installation:
-
-- Using `vcpkg`:
-  ```sh
-  vcpkg install libsodium
-  ```
-- Using `chocolatey`:
-  ```sh
-  choco install libsodium
-  ```
 
 ### Installing the SDK
 
