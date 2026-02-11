@@ -1,22 +1,63 @@
 package misc
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
 )
 
-// PhaseGetContext finds the matching application and environment, returning their IDs and the public key.
-func PhaseGetContext(userData AppKeyResponse, opts GetContextOptions) (string, string, string, error) {
-	for _, app := range userData.Apps {
-		if (opts.AppID != "" && app.ID == opts.AppID) || (opts.AppName != "" && app.Name == opts.AppName) {
-			for _, envKey := range app.EnvironmentKeys {
-				if envKey.Environment.Name == opts.EnvName {
-					return app.ID, envKey.Environment.ID, envKey.IdentityKey, nil
-				}
+// PhaseGetContext resolves app/env context with case-insensitive matching,
+// partial substring, shortest match wins. Returns 6 values:
+// appName, appID, envName, envID, identityKey, error.
+func PhaseGetContext(userData *AppKeyResponse, appName, envName, appID string) (string, string, string, string, string, error) {
+	if envName == "" {
+		envName = "Development"
+	}
+
+	// Find the app
+	var application *App
+	if appID != "" {
+		for i, app := range userData.Apps {
+			if app.ID == appID {
+				application = &userData.Apps[i]
+				break
 			}
 		}
+		if application == nil {
+			return "", "", "", "", "", fmt.Errorf("no application found with ID: '%s'", appID)
+		}
+	} else if appName != "" {
+		var matchingApps []App
+		for _, app := range userData.Apps {
+			if strings.Contains(strings.ToLower(app.Name), strings.ToLower(appName)) {
+				matchingApps = append(matchingApps, app)
+			}
+		}
+		if len(matchingApps) == 0 {
+			return "", "", "", "", "", fmt.Errorf("no application found with the name '%s'", appName)
+		}
+		shortest := matchingApps[0]
+		for _, app := range matchingApps[1:] {
+			if len(app.Name) < len(shortest.Name) {
+				shortest = app
+			}
+		}
+		application = &shortest
+	} else {
+		return "", "", "", "", "", fmt.Errorf("no application context provided")
 	}
-	return "", "", "", fmt.Errorf("matching context not found")
+
+	// Find the environment
+	for _, envKey := range application.EnvironmentKeys {
+		if strings.Contains(strings.ToLower(envKey.Environment.Name), strings.ToLower(envName)) {
+			return application.Name, application.ID, envKey.Environment.Name, envKey.Environment.ID, envKey.IdentityKey, nil
+		}
+	}
+
+	return "", "", "", "", "", fmt.Errorf("environment '%s' not found in application '%s'", envName, application.Name)
 }
 
 // FindEnvironmentKey searches for an environment key with case-insensitive matching.
