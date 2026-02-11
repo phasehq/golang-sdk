@@ -50,9 +50,18 @@ type App struct {
 	EnvironmentKeys []EnvironmentKey `json:"environment_keys"`
 }
 
+type Organisation struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type AppKeyResponse struct {
-	WrappedKeyShare string `json:"wrapped_key_share"`
-	Apps            []App  `json:"apps"`
+	UserID          string        `json:"user_id"`
+	AccountID       string        `json:"account_id"`
+	Organisation    *Organisation `json:"organisation"`
+	OfflineEnabled  bool          `json:"offline_enabled"`
+	WrappedKeyShare string        `json:"wrapped_key_share"`
+	Apps            []App         `json:"apps"`
 }
 
 type GetContextOptions struct {
