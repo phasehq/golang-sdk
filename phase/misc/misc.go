@@ -77,3 +77,65 @@ func TagMatches(secretTags []string, userTag string) bool {
 	}
 	return false
 }
+
+// GenerateRandomSecret generates a random secret of the specified type and length.
+func GenerateRandomSecret(randomType string, length int) (string, error) {
+	if length <= 0 {
+		length = 32
+	}
+
+	switch randomType {
+	case "hex":
+		b := make([]byte, length/2+1)
+		if _, err := rand.Read(b); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(b)[:length], nil
+	case "alphanumeric":
+		const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+		result := make([]byte, length)
+		for i := range result {
+			n, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+			if err != nil {
+				return "", err
+			}
+			result[i] = chars[n.Int64()]
+		}
+		return string(result), nil
+	case "key128":
+		b := make([]byte, 16)
+		if _, err := rand.Read(b); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(b), nil
+	case "key256":
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(b), nil
+	case "base64":
+		b := make([]byte, length)
+		if _, err := rand.Read(b); err != nil {
+			return "", err
+		}
+		encoded := base64.StdEncoding.EncodeToString(b)
+		if len(encoded) < length {
+			return encoded, nil
+		}
+		return encoded[:length], nil
+	case "base64url":
+		b := make([]byte, length)
+		if _, err := rand.Read(b); err != nil {
+			return "", err
+		}
+		encoded := base64.URLEncoding.EncodeToString(b)
+		if len(encoded) < length {
+			return encoded, nil
+		}
+		return encoded[:length], nil
+	default:
+		return "", fmt.Errorf("unsupported random type: %s. Supported types: hex, alphanumeric, base64, base64url, key128, key256", randomType)
+	}
+}
+
