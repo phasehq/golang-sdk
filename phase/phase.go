@@ -1,9 +1,9 @@
 package phase
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/phasehq/golang-sdk/phase/crypto"
@@ -11,7 +11,7 @@ import (
 	"github.com/phasehq/golang-sdk/phase/network"
 )
 
-// Phase struct to hold parsed service token information and host.
+// Phase config
 type Phase struct {
 	Prefix             string
 	PesVersion         string
@@ -22,756 +22,715 @@ type Phase struct {
 	Host               string
 	Debug              bool
 	TokenType          string
+	IsServiceToken     bool
+	IsUserToken        bool
 }
 
-type GetSecretOptions struct {
-	EnvName    string
-	AppName    string
-	AppID      string
-	KeyToFind  string
-	Tag        string
-	SecretPath string
+// Decrypted secrets from API response
+type SecretResult struct {
+	Key          string   `json:"key"`
+	Value        string   `json:"value"`
+	Comment      string   `json:"comment"`
+	Path         string   `json:"path"`
+	Application  string   `json:"application"`
+	Environment  string   `json:"environment"`
+	Tags         []string `json:"tags"`
+	Overridden   bool     `json:"overridden"`
+	IsDynamic    bool     `json:"is_dynamic,omitempty"`
+	DynamicGroup string   `json:"dynamic_group,omitempty"`
 }
 
-type GetAllSecretsOptions struct {
-	EnvName    string
-	AppName    string
-	AppID      string
-	Tag        string
-	SecretPath string
+// KeyValuePair represents a key-value pair for secret creation
+type KeyValuePair struct {
+	Key   string
+	Value string
 }
 
-type CreateSecretsOptions struct {
-	KeyValuePairs []map[string]string
+// GET SECRETS
+type GetOptions struct {
+	EnvName  string
+	AppName  string
+	AppID    string
+	Keys     []string
+	Tag      string
+	Path     string
+	Dynamic  bool
+	Lease    bool
+	LeaseTTL *int
+}
+
+// CREATE SECRETS
+type CreateOptions struct {
+	KeyValuePairs []KeyValuePair
 	EnvName       string
 	AppName       string
 	AppID         string
-	SecretPath    map[string]string
+	Path          string
+	OverrideValue string
 }
 
-type SecretUpdateOptions struct {
-	EnvName    string
-	AppName    string
-	AppID      string
-	Key        string
-	Value      string
-	SecretPath string
+// UPDATE SECRETS
+type UpdateOptions struct {
+	EnvName         string
+	AppName         string
+	AppID           string
+	Key             string
+	Value           string
+	SourcePath      string
+	DestinationPath string
+	Override        bool
+	ToggleOverride  bool
 }
 
-type DeleteSecretOptions struct {
-	EnvName     string
-	AppName     string
-	AppID       string
-	KeyToDelete string
-	SecretPath  string
+// DELETE SECRETS
+type DeleteOptions struct {
+	EnvName      string
+	AppName      string
+	AppID        string
+	KeysToDelete []string
+	Path         string
 }
 
-// Init initializes a new instance of Phase with the provided service token, host, and debug flag.
-func Init(serviceToken, host string, debug bool) *Phase {
-
-	// Validate the service token against the pattern
-	serviceMatches := misc.PssServicePattern.FindStringSubmatch(serviceToken)
-	userMatches := misc.PssUserPattern.FindStringSubmatch(serviceToken)
-
-	// Check if it's a valid service token
-	if serviceMatches == nil || len(serviceMatches) != 6 {
-		if userMatches != nil {
-			log.Fatalf("Error: User token provided. Expected service token.")
-		}
-		log.Fatalf("Error: Invalid Phase Service Token.")
-	}
-
-	// Use Phase Cloud if no host is provided
+// Create a new Phase instance from a token (service or user), host, and debug flag
+func New(token, host string, debug bool) (*Phase, error) {
 	if host == "" {
 		host = misc.PhaseCloudAPIHost
 	}
 
-	// Get version from regex group 1 (the capture group for 'v(\d+)')
-	version := serviceMatches[1] // This will be "2" for v2 tokens
-
-	// Determine token type based on version
-	tokenType := "Service"
-	if version == "2" {
-		tokenType = "ServiceAccount"
+	p := &Phase{
+		Host:  host,
+		Debug: debug,
 	}
 
-	// Create a new Phase instance with parsed service token components and debug flag
-	return &Phase{
-		Prefix:             "pss_service",
-		PesVersion:         "v" + version,
-		AppToken:           serviceMatches[2],
-		PssUserPublicKey:   serviceMatches[3],
-		Keyshare0:          serviceMatches[4],
-		Keyshare1UnwrapKey: serviceMatches[5],
-		Host:               host,
-		Debug:              debug,
-		TokenType:          tokenType,
+	serviceMatches := misc.PssServicePattern.FindStringSubmatch(token)
+	userMatches := misc.PssUserPattern.FindStringSubmatch(token)
+
+	if len(serviceMatches) == 6 {
+		p.IsServiceToken = true
+		version := serviceMatches[1]
+		p.Prefix = "pss_service"
+		p.PesVersion = "v" + version
+		p.AppToken = serviceMatches[2]
+		p.PssUserPublicKey = serviceMatches[3]
+		p.Keyshare0 = serviceMatches[4]
+		p.Keyshare1UnwrapKey = serviceMatches[5]
+		if version == "2" {
+			p.TokenType = "ServiceAccount"
+		} else {
+			p.TokenType = "Service"
+		}
+	} else if len(userMatches) == 6 {
+		p.IsUserToken = true
+		version := userMatches[1]
+		p.Prefix = "pss_user"
+		p.PesVersion = "v" + version
+		p.AppToken = userMatches[2]
+		p.PssUserPublicKey = userMatches[3]
+		p.Keyshare0 = userMatches[4]
+		p.Keyshare1UnwrapKey = userMatches[5]
+		p.TokenType = "User"
+	} else {
+		tokenType := "service token"
+		if strings.Contains(token, "pss_user") {
+			tokenType = "user token"
+		}
+		return nil, fmt.Errorf("invalid Phase %s", tokenType)
 	}
+
+	return p, nil
 }
 
-// resolveSecretReference parses and resolves a secret reference to its actual value.
-//
-// The function supports multiple reference formats:
-//
-// 1. Local Reference (Root Path):
-//    Syntax: `KEY`
-//    - Environment: Same as the current environment.
-//    - Path: Root path (`/`).
-//    - Secret Key: `KEY`
-//
-// 2. Local Reference (Specified Path):
-//    Syntax: `/backend/payments/STRIPE_KEY`
-//    - Environment: Same as the current environment.
-//    - Path: Specified path (`/backend/payments/`).
-//    - Secret Key: `STRIPE_KEY`
-//
-// 3. Cross-Environment Reference (Root Path):
-//    Syntax: `staging.DEBUG`
-//    - Environment: Different environment (e.g., `staging`).
-//    - Path: Root path (`/`).
-//    - Secret Key: `DEBUG`
-//
-// 4. Cross-Environment Reference (Specific Path):
-//    Syntax: `prod./frontend/SECRET_KEY`
-//    - Environment: Different environment (e.g., `prod`).
-//    - Path: Specified path (`/frontend/`).
-//    - Secret Key: `SECRET_KEY`
-//
-// 5. Cross-Application Reference:
-//    Syntax: `backend_api::production./frontend/SECRET_KEY`
-//    - Application: Different application (e.g., `backend_api`).
-//    - Environment: Different environment (e.g., `production`).
-//    - Path: Specified path (`/frontend/`).
-//    - Secret Key: `SECRET_KEY`
-func (p *Phase) resolveSecretReference(ref, currentEnvName string) (string, error) {
-	var appName, envName, path, keyName string
-
-	// Default app name is empty, meaning current app
-	appName = ""
-
-	// Check if this is a cross-application reference (contains "::")
-	if strings.Contains(ref, "::") {
-		// Split on the first :: to differentiate application from environment/path/key
-		parts := strings.SplitN(ref, "::", 2)
-		appName = parts[0]
-		ref = parts[1] // Update ref to be everything after the app name
+// Decrypt wrapped key share for the user tokens rereponse
+func (p *Phase) Decrypt(phaseCiphertext string, wrappedKeyShareData map[string]interface{}) (string, error) {
+	segments := strings.Split(phaseCiphertext, ":")
+	if len(segments) != 4 || segments[0] != "ph" {
+		return "", fmt.Errorf("ciphertext is invalid")
 	}
 
-	// Check if the reference starts with an environment name followed by a dot
-	if strings.Contains(ref, ".") {
-		// Split on the first dot to differentiate environment from path/key
-		parts := strings.SplitN(ref, ".", 2)
-		envName = parts[0]
-
-		// Further split the second part to separate the path and the key
-		// The last segment after the last "/" is the key, the rest is the path
-		lastSlashIndex := strings.LastIndex(parts[1], "/")
-		if lastSlashIndex != -1 { // Path is specified
-			path = parts[1][:lastSlashIndex] // Include the slash in the path
-			keyName = parts[1][lastSlashIndex+1:]
-		} else { // No path specified, use root
-			path = "/"
-			keyName = parts[1]
-		}
-	} else { // Local reference without an environment prefix
-		envName = currentEnvName
-		lastSlashIndex := strings.LastIndex(ref, "/")
-		if lastSlashIndex != -1 { // Path is specified
-			path = ref[:lastSlashIndex] // Include the slash in the path
-			keyName = ref[lastSlashIndex+1:]
-		} else { // No path specified, use root
-			path = "/"
-			keyName = ref
-		}
+	wrappedKeyShare, ok := wrappedKeyShareData["wrapped_key_share"].(string)
+	if !ok || wrappedKeyShare == "" {
+		return "", fmt.Errorf("wrapped key share not found in the response")
 	}
 
-	// Validate the extracted parts
-	if keyName == "" {
-		return "", fmt.Errorf("invalid secret reference format: %s", ref)
-	}
-
-	// Fetch and decrypt the referenced secret
-	opts := GetSecretOptions{
-		EnvName:    envName,
-		AppName:    appName,
-		KeyToFind:  keyName,
-		SecretPath: path,
-	}
-	resolvedSecret, err := p.Get(opts)
+	wrappedKeyShareBytes, err := hex.DecodeString(wrappedKeyShare)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve secret reference %s: %v", ref, err)
+		return "", fmt.Errorf("failed to decode wrapped key share: %w", err)
 	}
 
-	// Return the decrypted value of the referenced secret
-	decryptedValue, ok := (*resolvedSecret)["value"].(string)
-	if !ok {
-		return "", fmt.Errorf("decrypted value of the secret reference %s is not a string", ref)
+	unwrapKeyBytes, err := hex.DecodeString(p.Keyshare1UnwrapKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode keyshare1 unwrap key: %w", err)
 	}
 
-	return decryptedValue, nil
+	var unwrapKey [32]byte
+	copy(unwrapKey[:], unwrapKeyBytes)
+
+	keyshare1Bytes, err := crypto.DecryptRaw(wrappedKeyShareBytes, unwrapKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt wrapped key share: %w", err)
+	}
+
+	appPrivKey, err := crypto.ReconstructSecret(p.Keyshare0, string(keyshare1Bytes))
+	if err != nil {
+		return "", fmt.Errorf("failed to reconstruct app private key: %w", err)
+	}
+
+	plaintext, err := crypto.DecryptAsymmetric(phaseCiphertext, appPrivKey, p.PssUserPublicKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt: %w", err)
+	}
+
+	return plaintext, nil
 }
 
-// resolveSecretValue resolves all secret references in a given value string.
-//
-// This function identifies and resolves all secret references embedded within a string.
-// It supports references in the format ${...} where the content inside the braces 
-// follows the syntax described in resolveSecretReference, including:
-// - Local references: ${KEY} or ${/path/to/KEY}
-// - Cross-environment references: ${env.KEY} or ${env./path/to/KEY}
-// - Cross-application references: ${app::env.KEY} or ${app::env./path/to/KEY}
-func (p *Phase) resolveSecretValue(value string, currentEnvName string) (string, error) {
-	refs := misc.SecretRefRegex.FindAllString(value, -1)
-	resolvedValue := value
-
-	for _, ref := range refs {
-		// Extract just the reference part without the surrounding ${}
-		refMatch := misc.SecretRefRegex.FindStringSubmatch(ref)
-		if len(refMatch) > 1 {
-			// Pass the current environment name if needed for resolution
-			resolvedSecretValue, err := p.resolveSecretReference(refMatch[1], currentEnvName)
-			if err != nil {
-				return "", err
-			}
-			// Directly use the string value returned by resolveSecretReference
-			resolvedValue = strings.Replace(resolvedValue, ref, resolvedSecretValue, -1)
-		}
-	}
-
-	return resolvedValue, nil
-}
-
-// Get fetches and decrypts a secret, resolving any secret references within its value.
-func (p *Phase) Get(opts GetSecretOptions) (*map[string]interface{}, error) {
-	// Fetch user data
-	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to fetch user data: %v", err)
-		}
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var userData misc.AppKeyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		if p.Debug {
-			log.Printf("Failed to decode user data: %v", err)
-		}
-		return nil, err
-	}
-
-	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
-		EnvName: opts.EnvName,
-		AppName: opts.AppName,
-		AppID:   opts.AppID,
-	})
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to find environment key: %v", err)
-		}
-		return nil, err
-	}
-
-	decryptedSeed, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSeed, p.Keyshare0, p.TokenType, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to decrypt wrapped seed: %v", err)
-		}
-		return nil, err
-	}
-	decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.TokenType, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to decrypt wrapped salt: %v", err)
-		}
-		return nil, err
-	}
-
-	publicKeyHex, privateKeyHex, err := crypto.GenerateEnvKeyPair(decryptedSeed)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to generate environment key pair: %v", err)
-		}
-		return nil, err
-	}
-
-	keyDigest, err := crypto.Blake2bDigest(opts.KeyToFind, decryptedSalt)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to generate key digest: %v", err)
-		}
-		return nil, err
-	}
-
-	// Fetch a single secret based on keyDigest and optional path
-	secret, err := network.FetchPhaseSecret(p.TokenType, p.AppToken, envKey.Environment.ID, p.Host, keyDigest, opts.SecretPath)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to fetch secret: %v", err)
-		}
-		return nil, err
-	}
-
-	decryptedKey, decryptedValue, decryptedComment, err := crypto.DecryptSecret(secret, privateKeyHex, publicKeyHex)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to decrypt secret: %v", err)
-		}
-		return nil, err
-	}
-
-	// Resolve any secret references within the decryptedValue before creating the result map
-	resolvedValue, err := p.resolveSecretValue(decryptedValue, opts.EnvName)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to resolve secret value: %v", err)
-		}
-		return nil, err
-	}
-
-	// Verify tag match if a tag is provided
-	var stringTags []string
-	if opts.Tag != "" {
-		if secretTags, ok := secret["tags"].([]interface{}); ok {
-			for _, tagInterface := range secretTags {
-				if tagStr, ok := tagInterface.(string); ok {
-					stringTags = append(stringTags, tagStr)
-				}
-			}
-			if !misc.TagMatches(stringTags, opts.Tag) {
-				return nil, fmt.Errorf("secret with key '%s' found, but doesn't match the provided tag '%s'", opts.KeyToFind, opts.Tag)
+// Find the environment key for the given environment ID - to be used to decrypt secrets inside of a given environment
+func (p *Phase) findMatchingEnvironmentKey(userData *misc.AppKeyResponse, envID string) *misc.EnvironmentKey {
+	for _, app := range userData.Apps {
+		for _, envKey := range app.EnvironmentKeys {
+			if envKey.Environment.ID == envID {
+				return &envKey
 			}
 		}
-	}
-
-	// Extract the path directly from the secret map
-	secretPath, _ := secret["path"].(string)
-
-	result := &map[string]interface{}{
-		"key":     decryptedKey,
-		"value":   resolvedValue, // Use resolvedValue here
-		"comment": decryptedComment,
-		"tags":    stringTags,
-		"path":    secretPath,
-	}
-
-	if p.Debug {
-		log.Println("Secret fetched successfully")
-	}
-
-	return result, nil
-}
-
-func (p *Phase) GetAll(opts GetAllSecretsOptions) ([]map[string]interface{}, error) {
-	// Fetch user data
-	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to fetch user data: %v", err)
-		}
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var userData misc.AppKeyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		if p.Debug {
-			log.Printf("Failed to decode user data: %v", err)
-		}
-		return nil, err
-	}
-
-	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
-		EnvName: opts.EnvName,
-		AppName: opts.AppName,
-		AppID:   opts.AppID,
-	})
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to find environment key: %v", err)
-		}
-		return nil, err
-	}
-
-	// Decrypt the wrapped seed
-	decryptedSeed, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSeed, p.Keyshare0, p.TokenType, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to decrypt wrapped seed: %v", err)
-		}
-		return nil, err
-	}
-
-	// Generate environment key pair
-	publicKeyHex, privateKeyHex, err := crypto.GenerateEnvKeyPair(decryptedSeed)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to generate environment key pair: %v", err)
-		}
-		return nil, err
-	}
-
-	// Fetch secrets with optional path filtering
-	secrets, err := network.FetchPhaseSecrets(p.TokenType, p.AppToken, envKey.Environment.ID, p.Host, opts.SecretPath)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to fetch secrets: %v", err)
-		}
-		return nil, err
-	}
-
-	decryptedSecrets := make([]map[string]interface{}, 0)
-	for _, secret := range secrets {
-		// Decrypt key, value, and optional comment
-		decryptedKey, decryptedValue, decryptedComment, err := crypto.DecryptSecret(secret, privateKeyHex, publicKeyHex)
-		if err != nil {
-			if p.Debug {
-				log.Printf("Failed to decrypt secret: %v\n", err)
-			}
-			continue
-		}
-
-		// Resolve any secret references within the decryptedValue
-		resolvedValue, err := p.resolveSecretValue(decryptedValue, opts.EnvName)
-		if err != nil {
-			if p.Debug {
-				log.Printf("Failed to resolve secret value: %v\n", err)
-			}
-			continue
-		}
-
-		// Prepare tags for inclusion in result
-		var stringTags []string
-		if secretTags, ok := secret["tags"].([]interface{}); ok {
-			for _, tagInterface := range secretTags {
-				if tagStr, ok := tagInterface.(string); ok {
-					stringTags = append(stringTags, tagStr)
-				}
-			}
-		}
-
-		// Check for tag match if a tag is provided
-		if opts.Tag != "" && !misc.TagMatches(stringTags, opts.Tag) {
-			continue
-		}
-
-		// Extract path directly from the secret map
-		path, _ := secret["path"].(string)
-
-		// Append decrypted secret with path to result list
-		result := map[string]interface{}{
-			"key":     decryptedKey,
-			"value":   resolvedValue, // Use resolvedValue here
-			"comment": decryptedComment,
-			"tags":    stringTags,
-			"path":    path,
-		}
-
-		decryptedSecrets = append(decryptedSecrets, result)
-	}
-
-	if p.Debug {
-		log.Println("Secrets fetched successfully")
-	}
-
-	return decryptedSecrets, nil
-}
-
-// CreateSecrets creates new secrets in the Phase KMS for the specified environment and application.
-func (p *Phase) Create(opts CreateSecretsOptions) error {
-	// Fetch user data
-	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to fetch user data: %v", err)
-		}
-		return err
-	}
-	defer resp.Body.Close()
-
-	var userData misc.AppKeyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		if p.Debug {
-			log.Printf("Failed to decode user data: %v", err)
-		}
-		return err
-	}
-
-	_, envID, publicKey, err := misc.PhaseGetContext(userData, misc.GetContextOptions{
-		AppName: opts.AppName,
-		AppID:   opts.AppID,
-		EnvName: opts.EnvName,
-	})
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to get context: %v", err)
-		}
-		return err
-	}
-
-	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
-		EnvName: opts.EnvName,
-		AppName: opts.AppName,
-		AppID:   opts.AppID,
-	})
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to find environment key: %v", err)
-		}
-		return err
-	}
-
-	decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.TokenType, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to decrypt wrapped salt: %v", err)
-		}
-		return err
-	}
-
-	secrets := make([]map[string]interface{}, 0)
-	for _, pair := range opts.KeyValuePairs {
-		for key, value := range pair {
-			encryptedKey, err := crypto.EncryptAsymmetric(key, publicKey)
-			if err != nil {
-				if p.Debug {
-					log.Printf("Failed to encrypt key: %v\n", err)
-				}
-				continue
-			}
-
-			encryptedValue, err := crypto.EncryptAsymmetric(value, publicKey)
-			if err != nil {
-				if p.Debug {
-					log.Printf("Failed to encrypt value: %v\n", err)
-				}
-				continue
-			}
-
-			keyDigest, err := crypto.Blake2bDigest(key, decryptedSalt)
-			if err != nil {
-				if p.Debug {
-					log.Printf("Failed to generate key digest: %v\n", err)
-				}
-				continue
-			}
-
-			// Determine the path for the secret, default to "/" if not specified
-			path, ok := opts.SecretPath[key]
-			if !ok {
-				path = "/" // Default path if not provided
-			}
-
-			secret := map[string]interface{}{
-				"key":       encryptedKey,
-				"keyDigest": keyDigest,
-				"value":     encryptedValue,
-				"path":      path,
-				"tags":      []string{},
-				"comment":   "",
-			}
-			secrets = append(secrets, secret)
-		}
-	}
-
-	// Create the secret
-	err = network.CreatePhaseSecrets(p.TokenType, p.AppToken, envID, secrets, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to create secret: %v", err)
-		}
-		return err
-	}
-	if p.Debug {
-		log.Println("Secret created successfully")
 	}
 	return nil
 }
 
-func (p *Phase) Update(opts SecretUpdateOptions) error {
-	// Fetch user data
+// appKeyResponseToMap converts AppKeyResponse to a generic map for Decrypt().
+func appKeyResponseToMap(resp *misc.AppKeyResponse) map[string]interface{} {
+	data, _ := json.Marshal(resp)
+	var result map[string]interface{}
+	json.Unmarshal(data, &result)
+	return result
+}
+
+// GET SECRETS
+func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
 	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to fetch user data: %v", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var userData misc.AppKeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+		return nil, fmt.Errorf("failed to decode user data: %w", err)
+	}
+
+	appName, _, envName, envID, publicKey, err := misc.PhaseGetContext(&userData, opts.AppName, opts.EnvName, opts.AppID)
+	if err != nil {
+		return nil, err
+	}
+
+	envKey := p.findMatchingEnvironmentKey(&userData, envID)
+	if envKey == nil {
+		return nil, fmt.Errorf("no environment found with id: %s", envID)
+	}
+
+	// Decrypt wrapped seed to get env keypair
+	userDataMap := appKeyResponseToMap(&userData)
+	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userDataMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt wrapped seed: %w", err)
+	}
+
+	envPubKey, envPrivKey, err := crypto.GenerateEnvKeyPair(decryptedSeed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate env key pair: %w", err)
+	}
+	_ = envPubKey
+
+	// Fetch secrets
+	var secrets []map[string]interface{}
+	if opts.Dynamic {
+		secrets, err = network.FetchPhaseSecretsWithDynamic(p.TokenType, p.AppToken, envID, p.Host, opts.Path, true, opts.Lease, opts.LeaseTTL)
+	} else {
+		secrets, err = network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch secrets: %w", err)
+	}
+
+	var results []SecretResult
+	for _, secret := range secrets {
+		// Handle dynamic secrets
+		secretType, _ := secret["type"].(string)
+		if secretType == "dynamic" {
+			dynamicResults := processDynamicSecret(secret, envPrivKey, publicKey, appName, envName, opts)
+			results = append(results, dynamicResults...)
+			continue
 		}
+
+		// Check tag filter
+		if opts.Tag != "" {
+			secretTags := extractStringSlice(secret, "tags")
+			if !misc.TagMatches(secretTags, opts.Tag) {
+				continue
+			}
+		}
+
+		// Determine if override is active
+		override, hasOverride := secret["override"].(map[string]interface{})
+		useOverride := hasOverride && override != nil && getBool(override, "is_active")
+
+		keyToDecrypt, _ := secret["key"].(string)
+		var valueToDecrypt string
+		if useOverride {
+			valueToDecrypt, _ = override["value"].(string)
+		} else {
+			valueToDecrypt, _ = secret["value"].(string)
+		}
+		commentToDecrypt, _ := secret["comment"].(string)
+
+		decryptedKey, err := crypto.DecryptAsymmetric(keyToDecrypt, envPrivKey, publicKey)
+		if err != nil {
+			continue
+		}
+
+		decryptedValue, err := crypto.DecryptAsymmetric(valueToDecrypt, envPrivKey, publicKey)
+		if err != nil {
+			continue
+		}
+
+		var decryptedComment string
+		if commentToDecrypt != "" {
+			decryptedComment, _ = crypto.DecryptAsymmetric(commentToDecrypt, envPrivKey, publicKey)
+		}
+
+		secretPath, _ := secret["path"].(string)
+		if secretPath == "" {
+			secretPath = "/"
+		}
+
+		secretTags := extractStringSlice(secret, "tags")
+
+		result := SecretResult{
+			Key:         decryptedKey,
+			Value:       decryptedValue,
+			Overridden:  useOverride,
+			Tags:        secretTags,
+			Comment:     decryptedComment,
+			Path:        secretPath,
+			Application: appName,
+			Environment: envName,
+		}
+
+		// Filter by keys if specified
+		if len(opts.Keys) > 0 {
+			found := false
+			for _, k := range opts.Keys {
+				if k == decryptedKey {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+// CREATE SECRETS
+func (p *Phase) Create(opts CreateOptions) error {
+	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
+	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
 	var userData misc.AppKeyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		if p.Debug {
-			log.Printf("Failed to decode user data: %v", err)
-		}
-		return err
+		return fmt.Errorf("failed to decode user data: %w", err)
 	}
 
-	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
-		EnvName: opts.EnvName,
-		AppName: opts.AppName,
-		AppID:   opts.AppID,
-	})
+	_, _, _, envID, publicKey, err := misc.PhaseGetContext(&userData, opts.AppName, opts.EnvName, opts.AppID)
 	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to find environment key: %v", err)
-		}
 		return err
 	}
 
-	decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.TokenType, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
+	envKey := p.findMatchingEnvironmentKey(&userData, envID)
+	if envKey == nil {
+		return fmt.Errorf("no environment found with id: %s", envID)
+	}
+
+	userDataMap := appKeyResponseToMap(&userData)
+	decryptedSalt, err := p.Decrypt(envKey.WrappedSalt, userDataMap)
 	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to decrypt wrapped salt: %v", err)
-		}
-		return err
+		return fmt.Errorf("failed to decrypt wrapped salt: %w", err)
 	}
 
-	// Generate key digest
+	path := opts.Path
+	if path == "" {
+		path = "/"
+	}
+
+	var secrets []map[string]interface{}
+	for _, pair := range opts.KeyValuePairs {
+		encryptedKey, err := crypto.EncryptAsymmetric(pair.Key, publicKey)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt key: %w", err)
+		}
+
+		encryptedValue, err := crypto.EncryptAsymmetric(pair.Value, publicKey)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt value: %w", err)
+		}
+
+		keyDigest, err := crypto.Blake2bDigest(pair.Key, decryptedSalt)
+		if err != nil {
+			return fmt.Errorf("failed to generate key digest: %w", err)
+		}
+
+		secret := map[string]interface{}{
+			"key":       encryptedKey,
+			"keyDigest": keyDigest,
+			"value":     encryptedValue,
+			"path":      path,
+			"tags":      []string{},
+			"comment":   "",
+		}
+
+		if opts.OverrideValue != "" {
+			encryptedOverride, err := crypto.EncryptAsymmetric(opts.OverrideValue, publicKey)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt override value: %w", err)
+			}
+			secret["override"] = map[string]interface{}{
+				"value":    encryptedOverride,
+				"isActive": true,
+			}
+		}
+
+		secrets = append(secrets, secret)
+	}
+
+	return network.CreatePhaseSecrets(p.TokenType, p.AppToken, envID, secrets, p.Host)
+}
+
+// UPDATE SECRETS
+func (p *Phase) Update(opts UpdateOptions) (string, error) {
+	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var userData misc.AppKeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+		return "", fmt.Errorf("failed to decode user data: %w", err)
+	}
+
+	_, _, _, envID, publicKey, err := misc.PhaseGetContext(&userData, opts.AppName, opts.EnvName, opts.AppID)
+	if err != nil {
+		return "", err
+	}
+
+	envKey := p.findMatchingEnvironmentKey(&userData, envID)
+	if envKey == nil {
+		return "", fmt.Errorf("no environment found with id: %s", envID)
+	}
+
+	// Fetch secrets from source path
+	sourcePath := opts.SourcePath
+	secrets, err := network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch secrets: %w", err)
+	}
+
+	// Decrypt seed to get env keypair
+	userDataMap := appKeyResponseToMap(&userData)
+	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userDataMap)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt wrapped seed: %w", err)
+	}
+
+	_, envPrivKey, err := crypto.GenerateEnvKeyPair(decryptedSeed)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate env key pair: %w", err)
+	}
+
+	// Find matching secret
+	var matchingSecret map[string]interface{}
+	for _, secret := range secrets {
+		encKey, _ := secret["key"].(string)
+		dk, err := crypto.DecryptAsymmetric(encKey, envPrivKey, publicKey)
+		if err != nil {
+			continue
+		}
+		if dk == opts.Key {
+			matchingSecret = secret
+			break
+		}
+	}
+
+	if matchingSecret == nil {
+		return fmt.Sprintf("Key '%s' doesn't exist in path '%s'.", opts.Key, sourcePath), nil
+	}
+
+	// Encrypt key and value
+	encryptedKey, err := crypto.EncryptAsymmetric(opts.Key, publicKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to encrypt key: %w", err)
+	}
+
+	val := opts.Value
+	if val == "" {
+		val = ""
+	}
+	encryptedValue, err := crypto.EncryptAsymmetric(val, publicKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to encrypt value: %w", err)
+	}
+
+	// Get key digest
+	decryptedSalt, err := p.Decrypt(envKey.WrappedSalt, userDataMap)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt wrapped salt: %w", err)
+	}
+
 	keyDigest, err := crypto.Blake2bDigest(opts.Key, decryptedSalt)
 	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to generate key digest: %v", err)
-		}
-		return err
+		return "", fmt.Errorf("failed to generate key digest: %w", err)
 	}
 
-	// Fetch a single secret based on keyDigest
-	secret, err := network.FetchPhaseSecret(p.TokenType, p.AppToken, envKey.Environment.ID, p.Host, keyDigest, opts.SecretPath)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to fetch secret: %v", err)
-		}
-		return err
+	// Determine payload value
+	payloadValue := encryptedValue
+	if opts.Override || opts.ToggleOverride {
+		payloadValue, _ = matchingSecret["value"].(string)
 	}
 
-	publicKeyHex := envKey.IdentityKey
-
-	// Encrypt the key and value with the environment's public key
-	encryptedKey, err := crypto.EncryptAsymmetric(opts.Key, publicKeyHex)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to encrypt key: %v", err)
-		}
-		return err
+	// Determine path
+	path := matchingSecret["path"]
+	if opts.DestinationPath != "" {
+		path = opts.DestinationPath
 	}
 
-	encryptedValue, err := crypto.EncryptAsymmetric(opts.Value, publicKeyHex)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to encrypt value: %v", err)
-		}
-		return err
-	}
-
-	secretID, ok := secret["id"].(string)
-	if !ok {
-		return fmt.Errorf("secret ID is not a string")
-	}
-
-	// Default path to "/" if not provided
-	if opts.SecretPath == "" {
-		opts.SecretPath = "/"
-	}
-
-	secretUpdatePayload := map[string]interface{}{
+	secretID, _ := matchingSecret["id"].(string)
+	payload := map[string]interface{}{
 		"id":        secretID,
 		"key":       encryptedKey,
 		"keyDigest": keyDigest,
-		"value":     encryptedValue,
-		"path":      opts.SecretPath,
-		"tags":      []string{},
-		"comment":   "",
+		"value":     payloadValue,
+		"tags":      matchingSecret["tags"],
+		"comment":   matchingSecret["comment"],
+		"path":      path,
 	}
 
-	// Perform the update
-	err = network.UpdatePhaseSecrets(p.TokenType, p.AppToken, envKey.Environment.ID, []map[string]interface{}{secretUpdatePayload}, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to update secret: %v", err)
+	// Handle override logic
+	if opts.ToggleOverride {
+		override, hasOverride := matchingSecret["override"].(map[string]interface{})
+		if !hasOverride || override == nil {
+			return "", fmt.Errorf("no override found for key '%s'. Create one first with --override", opts.Key)
 		}
-		return err
+		currentState := getBool(override, "is_active")
+		payload["override"] = map[string]interface{}{
+			"value":    override["value"],
+			"isActive": !currentState,
+		}
+	} else if opts.Override {
+		override, hasOverride := matchingSecret["override"].(map[string]interface{})
+		if !hasOverride || override == nil {
+			payload["override"] = map[string]interface{}{
+				"value":    encryptedValue,
+				"isActive": true,
+			}
+		} else {
+			v := encryptedValue
+			if opts.Value == "" {
+				v, _ = override["value"].(string)
+			}
+			payload["override"] = map[string]interface{}{
+				"value":    v,
+				"isActive": getBool(override, "is_active"),
+			}
+		}
 	}
-	if p.Debug {
-		log.Println("Secret updated successfully")
+
+	err = network.UpdatePhaseSecrets(p.TokenType, p.AppToken, envID, []map[string]interface{}{payload}, p.Host)
+	if err != nil {
+		return "", fmt.Errorf("failed to update secret: %w", err)
 	}
-	return nil
+
+	return "Success", nil
 }
 
-// DeleteSecret deletes a secret in Phase KMS based on a key and environment.
-func (p *Phase) Delete(opts DeleteSecretOptions) error {
-	// Fetch user data
+// DELETE SECRETS
+func (p *Phase) Delete(opts DeleteOptions) ([]string, error) {
 	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
 	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to fetch user data: %v", err)
-		}
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	var userData misc.AppKeyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		if p.Debug {
-			log.Printf("Failed to decode user data: %v", err)
-		}
-		return err
+		return nil, fmt.Errorf("failed to decode user data: %w", err)
 	}
 
-	envKey, err := misc.FindEnvironmentKey(userData, misc.FindEnvironmentKeyOptions{
-		EnvName: opts.EnvName,
-		AppName: opts.AppName,
-		AppID:   opts.AppID,
-	})
+	_, _, _, envID, publicKey, err := misc.PhaseGetContext(&userData, opts.AppName, opts.EnvName, opts.AppID)
 	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to find environment key: %v", err)
-		}
-		return err
+		return nil, err
 	}
 
-	decryptedSalt, err := crypto.DecryptWrappedKeyShare(envKey.WrappedSalt, p.Keyshare0, p.TokenType, p.AppToken, p.Keyshare1UnwrapKey, p.PssUserPublicKey, p.Host)
+	envKey := p.findMatchingEnvironmentKey(&userData, envID)
+	if envKey == nil {
+		return nil, fmt.Errorf("no environment found with id: %s", envID)
+	}
+
+	// Decrypt seed to get env keypair
+	userDataMap := appKeyResponseToMap(&userData)
+	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userDataMap)
 	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to decrypt wrapped salt: %v", err)
-		}
-		return err
+		return nil, fmt.Errorf("failed to decrypt wrapped seed: %w", err)
 	}
 
-	// Generate key digest
-	keyDigest, err := crypto.Blake2bDigest(opts.KeyToDelete, decryptedSalt)
+	_, envPrivKey, err := crypto.GenerateEnvKeyPair(decryptedSeed)
 	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to generate key digest: %v", err)
-		}
-		return err
+		return nil, fmt.Errorf("failed to generate env key pair: %w", err)
 	}
 
-	// Fetch the specific secret by its key digest and path
-	secret, err := network.FetchPhaseSecret(p.AppToken, envKey.Environment.ID, p.TokenType, p.Host, keyDigest, opts.SecretPath)
+	// Fetch secrets
+	secrets, err := network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path)
 	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to fetch secret: %v", err)
-		}
-		return err
+		return nil, fmt.Errorf("failed to fetch secrets: %w", err)
 	}
 
-	secretID, ok := secret["id"].(string)
+	var idsToDelete []string
+	var keysNotFound []string
+
+	for _, key := range opts.KeysToDelete {
+		found := false
+		for _, secret := range secrets {
+			if opts.Path != "" {
+				secretPath, _ := secret["path"].(string)
+				if secretPath != opts.Path {
+					continue
+				}
+			}
+			encKey, _ := secret["key"].(string)
+			dk, err := crypto.DecryptAsymmetric(encKey, envPrivKey, publicKey)
+			if err != nil {
+				continue
+			}
+			if dk == key {
+				secretID, _ := secret["id"].(string)
+				idsToDelete = append(idsToDelete, secretID)
+				found = true
+				break
+			}
+		}
+		if !found {
+			keysNotFound = append(keysNotFound, key)
+		}
+	}
+
+	if len(idsToDelete) > 0 {
+		if err := network.DeletePhaseSecrets(p.TokenType, p.AppToken, envID, idsToDelete, p.Host); err != nil {
+			return nil, fmt.Errorf("failed to delete secrets: %w", err)
+		}
+	}
+
+	return keysNotFound, nil
+}
+
+// Handle dynamic secrets inside of a given environment
+func processDynamicSecret(secret map[string]interface{}, envPrivKey, publicKey, appName, envName string, opts GetOptions) []SecretResult {
+	var results []SecretResult
+
+	name, _ := secret["key"].(string)
+	if name != "" {
+		decName, err := crypto.DecryptAsymmetric(name, envPrivKey, publicKey)
+		if err == nil {
+			name = decName
+		}
+	}
+	provider, _ := secret["provider"].(string)
+	groupLabel := fmt.Sprintf("%s (%s)", name, provider)
+
+	secretPath, _ := secret["path"].(string)
+	if secretPath == "" {
+		secretPath = "/"
+	}
+
+	credMap := map[string]string{}
+	if leaseData, ok := secret["lease"].(map[string]interface{}); ok && leaseData != nil {
+		if creds, ok := leaseData["credentials"].([]interface{}); ok {
+			for _, c := range creds {
+				credEntry, ok := c.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				encKey, _ := credEntry["key"].(string)
+				encVal, _ := credEntry["value"].(string)
+				if encKey == "" {
+					continue
+				}
+				decKey, err := crypto.DecryptAsymmetric(encKey, envPrivKey, publicKey)
+				if err != nil {
+					continue
+				}
+				decVal := ""
+				if encVal != "" {
+					decVal, _ = crypto.DecryptAsymmetric(encVal, envPrivKey, publicKey)
+				}
+				credMap[decKey] = decVal
+			}
+		}
+	}
+
+	keyMap, ok := secret["key_map"].([]interface{})
 	if !ok {
-		return fmt.Errorf("secret ID is not a string for key: %v", opts.KeyToDelete)
+		return results
 	}
 
-	// Perform the delete operation for the found secret ID
-	err = network.DeletePhaseSecrets(p.TokenType, p.AppToken, envKey.Environment.ID, []string{secretID}, p.Host)
-	if err != nil {
-		if p.Debug {
-			log.Printf("Failed to delete secret: %v", err)
+	for _, km := range keyMap {
+		entry, ok := km.(map[string]interface{})
+		if !ok {
+			continue
 		}
-		return err
+		encKeyName, _ := entry["key_name"].(string)
+		if encKeyName == "" {
+			continue
+		}
+		decKeyName, err := crypto.DecryptAsymmetric(encKeyName, envPrivKey, publicKey)
+		if err != nil {
+			continue
+		}
+
+		value := ""
+		if v, exists := credMap[decKeyName]; exists {
+			value = v
+		}
+
+		result := SecretResult{
+			Key:          decKeyName,
+			Value:        value,
+			Path:         secretPath,
+			Application:  appName,
+			Environment:  envName,
+			IsDynamic:    true,
+			DynamicGroup: groupLabel,
+		}
+
+		if len(opts.Keys) > 0 {
+			found := false
+			for _, k := range opts.Keys {
+				if k == decKeyName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		results = append(results, result)
 	}
 
-	if p.Debug {
-		log.Println("Secret deleted successfully")
-	}
-	return nil
+	return results
 }
