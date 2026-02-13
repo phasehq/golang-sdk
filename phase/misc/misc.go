@@ -180,3 +180,31 @@ func GenerateRandomSecret(randomType string, length int) (string, error) {
 	}
 }
 
+func ExtractStringSlice(m map[string]interface{}, key string) []string {
+	raw, ok := m[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	var result []string
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+func GetBool(m map[string]interface{}, key string) bool {
+	v, ok := m[key]
+	if !ok {
+		return false
+	}
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return strings.ToLower(b) == "true"
+	default:
+		return false
+	}
+}

@@ -262,7 +262,7 @@ func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 
 		// Check tag filter
 		if opts.Tag != "" {
-			secretTags := extractStringSlice(secret, "tags")
+			secretTags := misc.ExtractStringSlice(secret, "tags")
 			if !misc.TagMatches(secretTags, opts.Tag) {
 				continue
 			}
@@ -270,7 +270,7 @@ func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 
 		// Determine if override is active
 		override, hasOverride := secret["override"].(map[string]interface{})
-		useOverride := hasOverride && override != nil && getBool(override, "is_active")
+		useOverride := hasOverride && override != nil && misc.GetBool(override, "is_active")
 
 		keyToDecrypt, _ := secret["key"].(string)
 		var valueToDecrypt string
@@ -301,7 +301,7 @@ func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 			secretPath = "/"
 		}
 
-		secretTags := extractStringSlice(secret, "tags")
+		secretTags := misc.ExtractStringSlice(secret, "tags")
 
 		result := SecretResult{
 			Key:         decryptedKey,
@@ -526,7 +526,7 @@ func (p *Phase) Update(opts UpdateOptions) (string, error) {
 		if !hasOverride || override == nil {
 			return "", fmt.Errorf("no override found for key '%s'. Create one first with --override", opts.Key)
 		}
-		currentState := getBool(override, "is_active")
+		currentState := misc.GetBool(override, "is_active")
 		payload["override"] = map[string]interface{}{
 			"value":    override["value"],
 			"isActive": !currentState,
@@ -545,7 +545,7 @@ func (p *Phase) Update(opts UpdateOptions) (string, error) {
 			}
 			payload["override"] = map[string]interface{}{
 				"value":    v,
-				"isActive": getBool(override, "is_active"),
+				"isActive": misc.GetBool(override, "is_active"),
 			}
 		}
 	}
