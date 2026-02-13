@@ -53,6 +53,9 @@ func ensureCached(p *Phase, appName, envName, path string) {
 	if _, ok := secretsCache[ck]; ok {
 		return
 	}
+	if p == nil {
+		return
+	}
 	fetched, err := p.Get(GetOptions{
 		EnvName: envName,
 		AppName: appName,
