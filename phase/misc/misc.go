@@ -39,13 +39,13 @@ func PhaseGetContext(userData *AppKeyResponse, appName, envName, appID string) (
 		if len(matchingApps) == 0 {
 			return "", "", "", "", "", fmt.Errorf("no application found with the name '%s'", appName)
 		}
-		shortest := matchingApps[0]
-		for _, app := range matchingApps[1:] {
-			if len(app.Name) < len(shortest.Name) {
-				shortest = app
+		shortestIdx := 0
+		for i := 1; i < len(matchingApps); i++ {
+			if len(matchingApps[i].Name) < len(matchingApps[shortestIdx].Name) {
+				shortestIdx = i
 			}
 		}
-		application = &shortest
+		application = &matchingApps[shortestIdx]
 	} else {
 		return "", "", "", "", "", fmt.Errorf("no application context provided")
 	}

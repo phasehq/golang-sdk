@@ -233,11 +233,10 @@ func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 		return nil, fmt.Errorf("failed to decrypt wrapped seed: %w", err)
 	}
 
-	envPubKey, envPrivKey, err := crypto.GenerateEnvKeyPair(decryptedSeed)
+	_, envPrivKey, err := crypto.GenerateEnvKeyPair(decryptedSeed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate env key pair: %w", err)
 	}
-	_ = envPubKey
 
 	// Fetch secrets
 	var secrets []map[string]interface{}
@@ -477,11 +476,7 @@ func (p *Phase) Update(opts UpdateOptions) (string, error) {
 		return "", fmt.Errorf("failed to encrypt key: %w", err)
 	}
 
-	val := opts.Value
-	if val == "" {
-		val = ""
-	}
-	encryptedValue, err := crypto.EncryptAsymmetric(val, publicKey)
+	encryptedValue, err := crypto.EncryptAsymmetric(opts.Value, publicKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to encrypt value: %w", err)
 	}
