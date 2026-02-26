@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/user"
 	"runtime"
@@ -64,6 +65,26 @@ func createHTTPClient() *http.Client {
 		}
 	}
 	return client
+}
+
+func makeRequest(req *http.Request) ([]byte, error) {
+	client := createHTTPClient()
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return body, nil
 }
 
 // handleHTTPResponse checks the HTTP response status and handles errors appropriately.
@@ -309,4 +330,206 @@ func DeletePhaseSecrets(tokenType, appToken, environmentID string, secretIDs []s
 	defer resp.Body.Close()
 
 	return handleHTTPResponse(resp)
+}
+
+func FetchPhaseSecretsWithDynamic(tokenType, appToken, envID, host, path string, dynamic, lease bool, leaseTTL *int) ([]map[string]interface{}, error) {
+	reqURL := fmt.Sprintf("%s/service/secrets/", host)
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	req.Header.Set("Environment", envID)
+	if path != "" {
+		req.Header.Set("Path", path)
+	}
+	if dynamic {
+		req.Header.Set("dynamic", "true")
+	}
+	if lease {
+		req.Header.Set("lease", "true")
+	}
+	if leaseTTL != nil {
+		req.Header.Set("lease-ttl", fmt.Sprintf("%d", *leaseTTL))
+	}
+
+	body, err := makeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	var secrets []map[string]interface{}
+	if err := json.Unmarshal(body, &secrets); err != nil {
+		return nil, fmt.Errorf("failed to decode secrets response: %w", err)
+	}
+	return secrets, nil
+}
+
+func ListDynamicSecrets(tokenType, appToken, host, appID, env, path string) (json.RawMessage, error) {
+	reqURL := fmt.Sprintf("%s/service/public/v1/secrets/dynamic/", host)
+
+	params := url.Values{}
+	params.Set("app_id", appID)
+	params.Set("env", env)
+	if path != "" {
+		params.Set("path", path)
+	}
+	reqURL += "?" + params.Encode()
+
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+
+	body, err := makeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(body), nil
+}
+
+func CreateDynamicSecretLease(tokenType, appToken, host, appID, env, secretID string, ttl *int) (json.RawMessage, error) {
+	reqURL := fmt.Sprintf("%s/service/public/v1/secrets/dynamic/", host)
+
+	params := url.Values{}
+	params.Set("app_id", appID)
+	params.Set("env", env)
+	params.Set("id", secretID)
+	params.Set("lease", "true")
+	if ttl != nil {
+		params.Set("ttl", fmt.Sprintf("%d", *ttl))
+	}
+	reqURL += "?" + params.Encode()
+
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+
+	body, err := makeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(body), nil
+}
+
+func ListDynamicSecretLeases(tokenType, appToken, host, appID, env, secretID string) (json.RawMessage, error) {
+	reqURL := fmt.Sprintf("%s/service/public/v1/secrets/dynamic/leases/", host)
+
+	params := url.Values{}
+	params.Set("app_id", appID)
+	params.Set("env", env)
+	if secretID != "" {
+		params.Set("secret_id", secretID)
+	}
+	reqURL += "?" + params.Encode()
+
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+
+	body, err := makeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(body), nil
+}
+
+func RenewDynamicSecretLease(tokenType, appToken, host, appID, env, leaseID string, ttl int) (json.RawMessage, error) {
+	reqURL := fmt.Sprintf("%s/service/public/v1/secrets/dynamic/leases/", host)
+
+	params := url.Values{}
+	params.Set("app_id", appID)
+	params.Set("env", env)
+	reqURL += "?" + params.Encode()
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"lease_id": leaseID,
+		"ttl":      ttl,
+	})
+
+	req, err := http.NewRequest("PUT", reqURL, bytes.NewBuffer(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	body, err := makeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(body), nil
+}
+
+func RevokeDynamicSecretLease(tokenType, appToken, host, appID, env, leaseID string) (json.RawMessage, error) {
+	reqURL := fmt.Sprintf("%s/service/public/v1/secrets/dynamic/leases/", host)
+
+	params := url.Values{}
+	params.Set("app_id", appID)
+	params.Set("env", env)
+	reqURL += "?" + params.Encode()
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"lease_id": leaseID,
+	})
+
+	req, err := http.NewRequest("DELETE", reqURL, bytes.NewBuffer(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	body, err := makeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(body), nil
+}
+
+func ExternalIdentityAuthAWS(host, serviceAccountID string, ttl *int, encodedURL, encodedHeaders, encodedBody, method string) (map[string]interface{}, error) {
+	reqURL := fmt.Sprintf("%s/service/public/identities/external/v1/aws/iam/auth/", host)
+
+	payload := map[string]interface{}{
+		"account": map[string]interface{}{
+			"type": "service",
+			"id":   serviceAccountID,
+		},
+		"awsIam": map[string]interface{}{
+			"httpRequestMethod":  method,
+			"httpRequestUrl":     encodedURL,
+			"httpRequestHeaders": encodedHeaders,
+			"httpRequestBody":    encodedBody,
+		},
+	}
+	if ttl != nil {
+		payload["tokenRequest"] = map[string]interface{}{
+			"ttl": *ttl,
+		}
+	}
+
+	payloadBytes, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", reqURL, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	respBody, err := makeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode auth response: %w", err)
+	}
+	return result, nil
 }
