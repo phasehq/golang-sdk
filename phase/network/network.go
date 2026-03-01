@@ -4,15 +4,17 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/user"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/phasehq/golang-sdk/phase/misc"
 )
@@ -58,7 +60,9 @@ func GetUserAgent() string {
 }
 
 func createHTTPClient() *http.Client {
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
 	if !misc.VerifySSL {
 		client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -67,11 +71,46 @@ func createHTTPClient() *http.Client {
 	return client
 }
 
+// wrapTransportError converts raw Go net/http errors into typed SDK errors.
+func wrapTransportError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// Check for DNS errors
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return &NetworkError{Kind: "dns", Host: dnsErr.Name, Detail: err.Error()}
+	}
+
+	// Check for connection refused
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Op == "dial" {
+			return &NetworkError{Kind: "connection", Detail: err.Error()}
+		}
+	}
+
+	// Check for TLS/SSL errors
+	errStr := err.Error()
+	if strings.Contains(errStr, "tls:") || strings.Contains(errStr, "x509:") {
+		return &SSLError{Detail: errStr}
+	}
+
+	// Check for timeout
+	if os.IsTimeout(err) || strings.Contains(errStr, "i/o timeout") || strings.Contains(errStr, "context deadline exceeded") {
+		return &NetworkError{Kind: "timeout", Detail: err.Error()}
+	}
+
+	// Fallback
+	return &NetworkError{Kind: "unknown", Detail: err.Error()}
+}
+
 func makeRequest(req *http.Request) ([]byte, error) {
 	client := createHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, wrapTransportError(err)
 	}
 	defer resp.Body.Close()
 
@@ -81,36 +120,54 @@ func makeRequest(req *http.Request) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, formatHTTPError(resp.StatusCode, body)
 	}
 
 	return body, nil
 }
 
+// formatHTTPError creates a typed SDK error from an HTTP error response.
+func formatHTTPError(statusCode int, body []byte) error {
+	switch statusCode {
+	case http.StatusForbidden:
+		return &AuthorizationError{Detail: extractErrorDetail(body)}
+	case http.StatusTooManyRequests:
+		return &RateLimitError{}
+	default:
+		return &APIError{StatusCode: statusCode, Detail: extractErrorDetail(body)}
+	}
+}
+
+// extractErrorDetail tries to extract an error message from a JSON response body.
+func extractErrorDetail(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var errResp map[string]interface{}
+	if err := json.Unmarshal(body, &errResp); err == nil {
+		if detail, ok := errResp["error"].(string); ok {
+			return detail
+		}
+		if detail, ok := errResp["detail"].(string); ok {
+			return detail
+		}
+	}
+	// If not JSON or no known error field, return the raw body (truncated)
+	s := strings.TrimSpace(string(body))
+	if len(s) > 200 {
+		s = s[:200] + "..."
+	}
+	return s
+}
+
 // handleHTTPResponse checks the HTTP response status and handles errors appropriately.
 func handleHTTPResponse(resp *http.Response) error {
-	switch resp.StatusCode {
-	case http.StatusOK:
-		// If OK, nothing more to do.
+	if resp.StatusCode == http.StatusOK {
 		return nil
-	case http.StatusForbidden:
-		// Handle forbidden access.
-		log.Println("🚫 Not authorized. Token expired or revoked.")
-		return nil
-	case http.StatusTooManyRequests:
-		// Handle rate limiting.
-		retryAfter := resp.Header.Get("Retry-After")
-		log.Printf("⏳ Rate limit exceeded. Retry after %s seconds.", retryAfter)
-		return fmt.Errorf("rate limit exceeded, retry after %s seconds", retryAfter)
-	default:
-		// Handle other unexpected statuses.
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read response body: %v", err)
-		}
-		errorMessage := fmt.Sprintf("🗿 Request failed with status code %d: %s", resp.StatusCode, string(body))
-		return fmt.Errorf(errorMessage)
 	}
+
+	body, _ := io.ReadAll(resp.Body)
+	return formatHTTPError(resp.StatusCode, body)
 }
 
 func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {
@@ -124,7 +181,7 @@ func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {
 	req.Header = ConstructHTTPHeaders(tokenType, appToken)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, wrapTransportError(err)
 	}
 	err = handleHTTPResponse(resp)
 	if err != nil {
@@ -170,7 +227,7 @@ func FetchAppKey(tokenType, appToken, host string) (string, error) {
 	req.Header = ConstructHTTPHeaders(tokenType, appToken)
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", wrapTransportError(err)
 	}
 	defer resp.Body.Close()
 
@@ -203,7 +260,7 @@ func FetchPhaseSecrets(tokenType, appToken, environmentID, host, path string) ([
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, wrapTransportError(err)
 	}
 	defer resp.Body.Close()
 
@@ -237,7 +294,7 @@ func FetchPhaseSecret(tokenType, appToken, environmentID, host, keyDigest, path 
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, wrapTransportError(err)
 	}
 	defer resp.Body.Close()
 
@@ -275,7 +332,7 @@ func CreatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return wrapTransportError(err)
 	}
 	defer resp.Body.Close()
 
@@ -300,7 +357,7 @@ func UpdatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return wrapTransportError(err)
 	}
 	defer resp.Body.Close()
 
@@ -325,7 +382,7 @@ func DeletePhaseSecrets(tokenType, appToken, environmentID string, secretIDs []s
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return wrapTransportError(err)
 	}
 	defer resp.Body.Close()
 
