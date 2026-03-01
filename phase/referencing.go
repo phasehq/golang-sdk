@@ -123,11 +123,11 @@ func parseReferenceContext(ref, currentApp, currentEnv string) (appName, envName
 }
 
 // ResolveAllSecrets resolves all ${...} references in a value string.
-func ResolveAllSecrets(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string) string {
+func ResolveAllSecrets(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string) (string, error) {
 	return resolveAllSecretsInternal(value, allSecrets, p, currentApp, currentEnv, nil)
 }
 
-func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string, visited map[string]bool) string {
+func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string, visited map[string]bool) (string, error) {
 	if visited == nil {
 		visited = map[string]bool{}
 	}
@@ -147,7 +147,7 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 
 	refs := secretRefRegex.FindAllStringSubmatch(value, -1)
 	if len(refs) == 0 {
-		return value
+		return value, nil
 	}
 
 	// Prefetch caches
@@ -156,7 +156,7 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 		ref := match[1]
 		app, env, path, _, err := parseReferenceContext(ref, currentApp, currentEnv)
 		if err != nil {
-			continue
+			return "", fmt.Errorf("failed to resolve reference ${%s}: %w", ref, err)
 		}
 		combo := fmt.Sprintf("%s|%s|%s", app, env, path)
 		if !seen[combo] {
@@ -172,7 +172,7 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 
 		app, env, path, keyName, err := parseReferenceContext(ref, currentApp, currentEnv)
 		if err != nil {
-			continue
+			return "", fmt.Errorf("failed to resolve reference ${%s}: %w", ref, err)
 		}
 
 		canonical := fmt.Sprintf("%s|%s|%s|%s", app, env, path, keyName)
@@ -199,13 +199,16 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 
 		// Recursively resolve if the resolved value itself contains references
 		if secretRefRegex.MatchString(resolvedVal) {
-			resolvedVal = resolveAllSecretsInternal(resolvedVal, allSecrets, p, app, env, visited)
+			resolvedVal, err = resolveAllSecretsInternal(resolvedVal, allSecrets, p, app, env, visited)
+			if err != nil {
+				return "", err
+			}
 		}
 
 		resolved = strings.ReplaceAll(resolved, fullRef, resolvedVal)
 	}
 
-	return resolved
+	return resolved, nil
 }
 
 func lookupInMemory(secretsDict map[string]map[string]map[string]string, envName, path, keyName, currentEnv string) (string, bool) {
