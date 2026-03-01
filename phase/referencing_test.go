@@ -93,7 +93,10 @@ func TestResolveAllSecrets_LocalCrossEnvAndPath(t *testing.T) {
 	seedCache(app, "current", "/backend/payments", map[string]string{"STRIPE_KEY": "stripe_value"})
 
 	input := "A=${KEY};B=${staging.DEBUG};C=${/backend/payments/STRIPE_KEY}"
-	got := ResolveAllSecrets(input, allSecrets, nil, app, currentEnv)
+	got, err := ResolveAllSecrets(input, allSecrets, nil, app, currentEnv)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := "A=value1;B=staging_debug_value;C=stripe_value"
 	if got != want {
 		t.Fatalf("unexpected resolved value: got %q want %q", got, want)
@@ -116,7 +119,10 @@ func TestResolveAllSecrets_CrossAppRecursive(t *testing.T) {
 	})
 
 	input := "DB=${other_app::dev.POSTGRESQL_URL}"
-	got := ResolveAllSecrets(input, nil, nil, "test_app", "current")
+	got, err := ResolveAllSecrets(input, nil, nil, "test_app", "current")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := "DB=postgresql://pg_user:pg_password@localhost/db"
 	if got != want {
 		t.Fatalf("unexpected recursive cross-app resolution: got %q want %q", got, want)
@@ -133,7 +139,10 @@ func TestResolveAllSecrets_CycleDoesNotInfiniteLoop(t *testing.T) {
 		"C": "${A}",
 	})
 
-	got := ResolveAllSecrets("X=${other_app::dev.A}", nil, nil, "test_app", "current")
+	got, err := ResolveAllSecrets("X=${other_app::dev.A}", nil, nil, "test_app", "current")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !strings.Contains(got, "${") {
 		t.Fatalf("expected unresolved placeholder due to cycle, got %q", got)
 	}
@@ -144,7 +153,10 @@ func TestResolveAllSecrets_PreservesRailwayStyleSyntax(t *testing.T) {
 	t.Cleanup(ResetSecretsCache)
 
 	input := "Railway: ${{RAILWAY_TOKEN}}"
-	got := ResolveAllSecrets(input, nil, nil, "test_app", "current")
+	got, err := ResolveAllSecrets(input, nil, nil, "test_app", "current")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got != input {
 		t.Fatalf("expected railway syntax unchanged: got %q want %q", got, input)
 	}
@@ -160,8 +172,25 @@ func TestResolveAllSecrets_MultipleOccurrences(t *testing.T) {
 		{Application: app, Environment: "current", Path: "/", Key: "KEY", Value: "v"},
 	}
 
-	got := ResolveAllSecrets("A=${KEY};B=${KEY}", allSecrets, nil, app, "current")
+	got, err := ResolveAllSecrets("A=${KEY};B=${KEY}", allSecrets, nil, app, "current")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got != "A=v;B=v" {
 		t.Fatalf("unexpected repeated-reference result: %q", got)
+	}
+}
+
+func TestResolveAllSecrets_CrossAppInvalidRefReturnsError(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	input := "${backend_api::SECRET_KEY}"
+	_, err := ResolveAllSecrets(input, nil, nil, "test_app", "current")
+	if err == nil {
+		t.Fatal("expected error for invalid cross-app reference without env")
+	}
+	if !strings.Contains(err.Error(), "cross-app references must specify an environment") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 }
