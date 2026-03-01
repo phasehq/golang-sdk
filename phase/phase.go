@@ -301,6 +301,9 @@ func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 		}
 
 		secretTags := misc.ExtractStringSlice(secret, "tags")
+		if secretTags == nil {
+			secretTags = []string{}
+		}
 
 		result := SecretResult{
 			Key:         decryptedKey,
@@ -636,11 +639,17 @@ func (p *Phase) Delete(opts DeleteOptions) ([]string, error) {
 func processDynamicSecret(secret map[string]interface{}, envPrivKey, publicKey, appName, envName string, opts GetOptions) []SecretResult {
 	var results []SecretResult
 
-	name, _ := secret["key"].(string)
-	if name != "" {
-		decName, err := crypto.DecryptAsymmetric(name, envPrivKey, publicKey)
-		if err == nil {
-			name = decName
+	name, _ := secret["name"].(string)
+	if name == "" {
+		// Fallback: try decrypting the key field
+		encKey, _ := secret["key"].(string)
+		if encKey != "" {
+			if decName, err := crypto.DecryptAsymmetric(encKey, envPrivKey, publicKey); err == nil {
+				name = decName
+			}
+		}
+		if name == "" {
+			name = "Dynamic secret"
 		}
 	}
 	provider, _ := secret["provider"].(string)
