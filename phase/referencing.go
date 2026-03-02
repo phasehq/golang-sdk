@@ -31,23 +31,6 @@ func normalizePath(path string) string {
 	return path
 }
 
-func primeCacheFromList(secrets []SecretResult, fallbackAppName string) {
-	for _, s := range secrets {
-		app := s.Application
-		if app == "" {
-			app = fallbackAppName
-		}
-		if app == "" || s.Environment == "" || s.Key == "" {
-			continue
-		}
-		ck := cacheKey(app, s.Environment, s.Path)
-		if _, ok := secretsCache[ck]; !ok {
-			secretsCache[ck] = map[string]string{}
-		}
-		secretsCache[ck][s.Key] = s.Value
-	}
-}
-
 func ensureCached(p *Phase, appName, envName, path string) {
 	ck := cacheKey(appName, envName, path)
 	if _, ok := secretsCache[ck]; ok {
@@ -134,7 +117,6 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 
 	// Build in-memory lookup: env -> path -> key -> value
 	secretsDict := map[string]map[string]map[string]string{}
-	primeCacheFromList(allSecrets, currentApp)
 	for _, s := range allSecrets {
 		if _, ok := secretsDict[s.Environment]; !ok {
 			secretsDict[s.Environment] = map[string]map[string]string{}
