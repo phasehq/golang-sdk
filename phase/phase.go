@@ -205,6 +205,29 @@ func appKeyResponseToMap(resp *misc.AppKeyResponse) map[string]interface{} {
 
 // GET SECRETS
 func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
+	results, err := p.fetchSecrets(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Resolve secret references
+	ResetSecretsCache()
+	for i, secret := range results {
+		if secret.Value == "" {
+			continue
+		}
+		resolvedValue, err := ResolveAllSecrets(secret.Value, results, p, secret.Application, secret.Environment)
+		if err != nil {
+			continue // Keep original unresolved value
+		}
+		results[i].Value = resolvedValue
+	}
+
+	return results, nil
+}
+
+// fetchSecrets fetches and decrypts secrets without resolving references.
+func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
 	if err != nil {
 		return nil, err

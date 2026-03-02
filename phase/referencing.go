@@ -56,7 +56,7 @@ func ensureCached(p *Phase, appName, envName, path string) {
 	if p == nil {
 		return
 	}
-	fetched, err := p.Get(GetOptions{
+	fetched, err := p.fetchSecrets(GetOptions{
 		EnvName: envName,
 		AppName: appName,
 		Path:    normalizePath(path),
