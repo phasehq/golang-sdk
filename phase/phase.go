@@ -261,12 +261,21 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 		return nil, fmt.Errorf("failed to generate env key pair: %w", err)
 	}
 
+	// Compute key digest for single-key lookups
+	var keyDigest string
+	if len(opts.Keys) == 1 {
+		decryptedSalt, saltErr := p.Decrypt(envKey.WrappedSalt, userDataMap)
+		if saltErr == nil {
+			keyDigest, _ = crypto.Blake2bDigest(opts.Keys[0], decryptedSalt)
+		}
+	}
+
 	// Fetch secrets
 	var secrets []map[string]interface{}
 	if opts.Dynamic {
-		secrets, err = network.FetchPhaseSecretsWithDynamic(p.TokenType, p.AppToken, envID, p.Host, opts.Path, true, opts.Lease, opts.LeaseTTL)
+		secrets, err = network.FetchPhaseSecretsWithDynamic(p.TokenType, p.AppToken, envID, p.Host, opts.Path, keyDigest, true, opts.Lease, opts.LeaseTTL)
 	} else {
-		secrets, err = network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path)
+		secrets, err = network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path, keyDigest)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch secrets: %w", err)
@@ -461,7 +470,7 @@ func (p *Phase) Update(opts UpdateOptions) (string, error) {
 
 	// Fetch secrets from source path
 	sourcePath := opts.SourcePath
-	secrets, err := network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, sourcePath)
+	secrets, err := network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, sourcePath, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch secrets: %w", err)
 	}
@@ -615,7 +624,7 @@ func (p *Phase) Delete(opts DeleteOptions) ([]string, error) {
 	}
 
 	// Fetch secrets
-	secrets, err := network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path)
+	secrets, err := network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch secrets: %w", err)
 	}

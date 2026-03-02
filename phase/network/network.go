@@ -243,7 +243,7 @@ func FetchAppKey(tokenType, appToken, host string) (string, error) {
 	return jsonResp.WrappedKeyShare, nil
 }
 
-func FetchPhaseSecrets(tokenType, appToken, environmentID, host, path string) ([]map[string]interface{}, error) {
+func FetchPhaseSecrets(tokenType, appToken, environmentID, host, path, keyDigest string) ([]map[string]interface{}, error) {
 	client := createHTTPClient()
 	url := fmt.Sprintf("%s/service/secrets/", host)
 
@@ -256,6 +256,9 @@ func FetchPhaseSecrets(tokenType, appToken, environmentID, host, path string) ([
 	req.Header.Set("Environment", environmentID)
 	if path != "" {
 		req.Header.Set("Path", path)
+	}
+	if keyDigest != "" {
+		req.Header.Set("KeyDigest", keyDigest)
 	}
 
 	resp, err := client.Do(req)
@@ -389,7 +392,7 @@ func DeletePhaseSecrets(tokenType, appToken, environmentID string, secretIDs []s
 	return handleHTTPResponse(resp)
 }
 
-func FetchPhaseSecretsWithDynamic(tokenType, appToken, envID, host, path string, dynamic, lease bool, leaseTTL *int) ([]map[string]interface{}, error) {
+func FetchPhaseSecretsWithDynamic(tokenType, appToken, envID, host, path, keyDigest string, dynamic, lease bool, leaseTTL *int) ([]map[string]interface{}, error) {
 	reqURL := fmt.Sprintf("%s/service/secrets/", host)
 	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
@@ -400,6 +403,9 @@ func FetchPhaseSecretsWithDynamic(tokenType, appToken, envID, host, path string,
 	req.Header.Set("Environment", envID)
 	if path != "" {
 		req.Header.Set("Path", path)
+	}
+	if keyDigest != "" {
+		req.Header.Set("KeyDigest", keyDigest)
 	}
 	if dynamic {
 		req.Header.Set("dynamic", "true")
