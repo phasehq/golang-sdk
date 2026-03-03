@@ -59,16 +59,20 @@ func GetUserAgent() string {
 	return strings.Join(details, " ")
 }
 
-func createHTTPClient() *http.Client {
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-	if !misc.VerifySSL {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+var httpClient *http.Client
+
+func getHTTPClient() *http.Client {
+	if httpClient == nil {
+		httpClient = &http.Client{
+			Timeout: 30 * time.Second,
+		}
+		if !misc.VerifySSL {
+			httpClient.Transport = &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			}
 		}
 	}
-	return client
+	return httpClient
 }
 
 // wrapTransportError converts raw Go net/http errors into typed SDK errors.
@@ -107,7 +111,7 @@ func wrapTransportError(err error) error {
 }
 
 func makeRequest(req *http.Request) ([]byte, error) {
-	client := createHTTPClient()
+	client := getHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, wrapTransportError(err)
@@ -171,7 +175,7 @@ func handleHTTPResponse(resp *http.Response) error {
 }
 
 func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {
-	client := createHTTPClient()
+	client := getHTTPClient()
 	url := fmt.Sprintf("%s/service/secrets/tokens/", host)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -192,32 +196,8 @@ func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {
 	return resp, nil
 }
 
-type AppKeyResponse struct {
-	WrappedKeyShare string `json:"wrapped_key_share"`
-	Apps            []struct {
-		ID              string `json:"id"`
-		Name            string `json:"name"`
-		Encryption      string `json:"encryption"`
-		EnvironmentKeys []struct {
-			ID          string `json:"id"`
-			Environment struct {
-				ID      string `json:"id"`
-				Name    string `json:"name"`
-				EnvType string `json:"env_type"`
-			} `json:"environment"`
-			IdentityKey string  `json:"identity_key"`
-			WrappedSeed string  `json:"wrapped_seed"`
-			WrappedSalt string  `json:"wrapped_salt"`
-			CreatedAt   string  `json:"created_at"`
-			UpdatedAt   string  `json:"updated_at"`
-			DeletedAt   *string `json:"deleted_at"` // Use pointer to accommodate null
-			User        *string `json:"user"`       // Use pointer to accommodate null
-		} `json:"environment_keys"`
-	} `json:"apps"`
-}
-
 func FetchAppKey(tokenType, appToken, host string) (string, error) {
-	client := createHTTPClient()
+	client := getHTTPClient()
 	url := fmt.Sprintf("%s/service/secrets/tokens/", host)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -235,7 +215,7 @@ func FetchAppKey(tokenType, appToken, host string) (string, error) {
 		return "", err
 	}
 
-	var jsonResp AppKeyResponse
+	var jsonResp misc.AppKeyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&jsonResp); err != nil {
 		return "", fmt.Errorf("failed to decode JSON: %v", err)
 	}
@@ -244,7 +224,7 @@ func FetchAppKey(tokenType, appToken, host string) (string, error) {
 }
 
 func FetchPhaseSecrets(tokenType, appToken, environmentID, host, path, keyDigest string) ([]map[string]interface{}, error) {
-	client := createHTTPClient()
+	client := getHTTPClient()
 	url := fmt.Sprintf("%s/service/secrets/", host)
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -280,7 +260,7 @@ func FetchPhaseSecrets(tokenType, appToken, environmentID, host, path, keyDigest
 }
 
 func FetchPhaseSecret(tokenType, appToken, environmentID, host, keyDigest, path string) (map[string]interface{}, error) {
-	client := createHTTPClient()
+	client := getHTTPClient()
 	url := fmt.Sprintf("%s/service/secrets/", host)
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -318,7 +298,7 @@ func FetchPhaseSecret(tokenType, appToken, environmentID, host, keyDigest, path 
 }
 
 func CreatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map[string]interface{}, host string) error {
-	client := createHTTPClient()
+	client := getHTTPClient()
 	url := fmt.Sprintf("%s/service/secrets/", host)
 	data, err := json.Marshal(map[string][]map[string]interface{}{"secrets": secrets})
 	if err != nil {
@@ -331,6 +311,7 @@ func CreatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
 	}
 
 	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Environment", environmentID)
 
 	resp, err := client.Do(req)
@@ -343,7 +324,7 @@ func CreatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
 }
 
 func UpdatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map[string]interface{}, host string) error {
-	client := createHTTPClient()
+	client := getHTTPClient()
 	url := fmt.Sprintf("%s/service/secrets/", host)
 	data, err := json.Marshal(map[string][]map[string]interface{}{"secrets": secrets})
 	if err != nil {
@@ -356,6 +337,7 @@ func UpdatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
 	}
 
 	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Environment", environmentID)
 
 	resp, err := client.Do(req)
@@ -368,7 +350,7 @@ func UpdatePhaseSecrets(tokenType, appToken, environmentID string, secrets []map
 }
 
 func DeletePhaseSecrets(tokenType, appToken, environmentID string, secretIDs []string, host string) error {
-	client := createHTTPClient()
+	client := getHTTPClient()
 	url := fmt.Sprintf("%s/service/secrets/", host)
 	data, err := json.Marshal(map[string][]string{"secrets": secretIDs})
 	if err != nil {
@@ -381,6 +363,7 @@ func DeletePhaseSecrets(tokenType, appToken, environmentID string, secretIDs []s
 	}
 
 	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Environment", environmentID)
 
 	resp, err := client.Do(req)
