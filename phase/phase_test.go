@@ -17,7 +17,7 @@ func TestNew_ServiceAndUserTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(service v1) error: %v", err)
 	}
-	if !p.IsServiceToken || p.IsUserToken || p.TokenType != "Service" || p.Prefix != "pss_service" || p.PesVersion != "v1" {
+	if !p.IsServiceToken || p.IsUserToken || p.TokenType != "Service" || p.prefix != "pss_service" || p.pesVersion != "v1" {
 		t.Fatalf("unexpected service v1 parse: %+v", p)
 	}
 	if p.Host != misc.PhaseCloudAPIHost {
@@ -38,7 +38,7 @@ func TestNew_ServiceAndUserTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(user) error: %v", err)
 	}
-	if !p.IsUserToken || p.IsServiceToken || p.TokenType != "User" || p.Prefix != "pss_user" {
+	if !p.IsUserToken || p.IsServiceToken || p.TokenType != "User" || p.prefix != "pss_user" {
 		t.Fatalf("unexpected user parse: %+v", p)
 	}
 }
@@ -75,28 +75,6 @@ func TestFindMatchingEnvironmentKey(t *testing.T) {
 	key = p.findMatchingEnvironmentKey(userData, "does-not-exist")
 	if key != nil {
 		t.Fatalf("expected nil for missing env id, got %+v", key)
-	}
-}
-
-func TestAppKeyResponseToMap(t *testing.T) {
-	resp := &misc.AppKeyResponse{
-		UserID:          "user-1",
-		AccountID:       "account-1",
-		WrappedKeyShare: "wks",
-		Apps: []misc.App{
-			{ID: "app-1", Name: "Backend"},
-		},
-	}
-	m := appKeyResponseToMap(resp)
-
-	if m["user_id"] != "user-1" {
-		t.Fatalf("unexpected user_id in map: %v", m["user_id"])
-	}
-	if m["account_id"] != "account-1" {
-		t.Fatalf("unexpected account_id in map: %v", m["account_id"])
-	}
-	if _, ok := m["apps"]; !ok {
-		t.Fatal("expected apps key in map")
 	}
 }
 
