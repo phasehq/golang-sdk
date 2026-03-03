@@ -1,8 +1,6 @@
 package misc
 
-import (
-	"regexp"
-)
+import "regexp"
 
 const (
 	Version           = "2.0.0"
@@ -16,13 +14,9 @@ var (
 )
 
 var (
-
 	// Compiled regex patterns
 	PssUserPattern    = regexp.MustCompile(`^pss_user:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$`)
 	PssServicePattern = regexp.MustCompile(`^pss_service:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$`)
-
-	// Regex to identify secret references
-	SecretRefRegex = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
 
 type Environment struct {
