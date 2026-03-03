@@ -4,16 +4,22 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 var secretRefRegex = regexp.MustCompile(`\$\{([^}]+)\}`)
 
 // secretsCache keyed by "app|env|path" -> key -> value
-var secretsCache = map[string]map[string]string{}
+var (
+	secretsCache   = map[string]map[string]string{}
+	secretsCacheMu sync.RWMutex
+)
 
 // ResetSecretsCache clears the internal referencing cache.
 func ResetSecretsCache() {
+	secretsCacheMu.Lock()
 	secretsCache = map[string]map[string]string{}
+	secretsCacheMu.Unlock()
 }
 
 func cacheKey(app, env, path string) string {
@@ -26,16 +32,25 @@ func normalizePath(path string) string {
 		return "/"
 	}
 	if !strings.HasPrefix(path, "/") {
-		return "/" + path
+		path = "/" + path
+	}
+	// Strip trailing slash (except for root "/")
+	if len(path) > 1 && strings.HasSuffix(path, "/") {
+		path = strings.TrimRight(path, "/")
 	}
 	return path
 }
 
 func ensureCached(p *Phase, appName, envName, path string) {
 	ck := cacheKey(appName, envName, path)
-	if _, ok := secretsCache[ck]; ok {
+
+	secretsCacheMu.RLock()
+	_, ok := secretsCache[ck]
+	secretsCacheMu.RUnlock()
+	if ok {
 		return
 	}
+
 	if p == nil {
 		return
 	}
@@ -51,11 +66,16 @@ func ensureCached(p *Phase, appName, envName, path string) {
 	for _, s := range fetched {
 		bucket[s.Key] = s.Value
 	}
+
+	secretsCacheMu.Lock()
 	secretsCache[ck] = bucket
+	secretsCacheMu.Unlock()
 }
 
 func getFromCache(appName, envName, path, keyName string) (string, bool) {
 	ck := cacheKey(appName, envName, path)
+	secretsCacheMu.RLock()
+	defer secretsCacheMu.RUnlock()
 	bucket, ok := secretsCache[ck]
 	if !ok {
 		return "", false
@@ -116,15 +136,17 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 	}
 
 	// Build in-memory lookup: env -> path -> key -> value
+	// Normalize paths so they match what parseReferenceContext produces (no trailing slash).
 	secretsDict := map[string]map[string]map[string]string{}
 	for _, s := range allSecrets {
+		p := normalizePath(s.Path)
 		if _, ok := secretsDict[s.Environment]; !ok {
 			secretsDict[s.Environment] = map[string]map[string]string{}
 		}
-		if _, ok := secretsDict[s.Environment][s.Path]; !ok {
-			secretsDict[s.Environment][s.Path] = map[string]string{}
+		if _, ok := secretsDict[s.Environment][p]; !ok {
+			secretsDict[s.Environment][p] = map[string]string{}
 		}
-		secretsDict[s.Environment][s.Path][s.Key] = s.Value
+		secretsDict[s.Environment][p][s.Key] = s.Value
 	}
 
 	refs := secretRefRegex.FindAllStringSubmatch(value, -1)
@@ -147,10 +169,16 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 		}
 	}
 
-	resolved := value
-	for _, match := range refs {
+	// Resolve each reference and collect results
+	type resolvedRef struct {
+		fullRef     string
+		resolvedVal string
+	}
+	var resolutions []resolvedRef
+
+	locs := secretRefRegex.FindAllStringIndex(value, -1)
+	for i, match := range refs {
 		ref := match[1]
-		fullRef := match[0]
 
 		app, env, path, keyName, err := parseReferenceContext(ref, currentApp, currentEnv)
 		if err != nil {
@@ -159,15 +187,14 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 
 		canonical := fmt.Sprintf("%s|%s|%s|%s", app, env, path, keyName)
 		if visited[canonical] {
-			continue
+			return "", fmt.Errorf("circular reference detected: ${%s}", ref)
 		}
-		visited[canonical] = true
 
 		// Try in-memory dict first (same app only)
 		resolvedVal := ""
 		found := false
 		if app == currentApp {
-			resolvedVal, found = lookupInMemory(secretsDict, env, path, keyName, currentEnv)
+			resolvedVal, found = lookupInMemory(secretsDict, env, path, keyName)
 		}
 
 		// Try cache
@@ -176,24 +203,42 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 		}
 
 		if !found {
+			// Keep original reference text
+			resolutions = append(resolutions, resolvedRef{fullRef: value[locs[i][0]:locs[i][1]], resolvedVal: value[locs[i][0]:locs[i][1]]})
 			continue
 		}
 
 		// Recursively resolve if the resolved value itself contains references
 		if secretRefRegex.MatchString(resolvedVal) {
-			resolvedVal, err = resolveAllSecretsInternal(resolvedVal, allSecrets, p, app, env, visited)
+			// Create a child visited set so sibling refs don't interfere
+			childVisited := make(map[string]bool, len(visited)+1)
+			for k, v := range visited {
+				childVisited[k] = v
+			}
+			childVisited[canonical] = true
+			resolvedVal, err = resolveAllSecretsInternal(resolvedVal, allSecrets, p, app, env, childVisited)
 			if err != nil {
 				return "", err
 			}
 		}
 
-		resolved = strings.ReplaceAll(resolved, fullRef, resolvedVal)
+		resolutions = append(resolutions, resolvedRef{fullRef: value[locs[i][0]:locs[i][1]], resolvedVal: resolvedVal})
 	}
 
-	return resolved, nil
+	// Build result using positional replacement to avoid aliasing
+	var result strings.Builder
+	lastEnd := 0
+	for i, loc := range locs {
+		result.WriteString(value[lastEnd:loc[0]])
+		result.WriteString(resolutions[i].resolvedVal)
+		lastEnd = loc[1]
+	}
+	result.WriteString(value[lastEnd:])
+
+	return result.String(), nil
 }
 
-func lookupInMemory(secretsDict map[string]map[string]map[string]string, envName, path, keyName, currentEnv string) (string, bool) {
+func lookupInMemory(secretsDict map[string]map[string]map[string]string, envName, path, keyName string) (string, bool) {
 	envKey := findEnvKeyCaseInsensitive(secretsDict, envName)
 	if envKey == "" {
 		return "", false
@@ -203,42 +248,19 @@ func lookupInMemory(secretsDict map[string]map[string]map[string]string, envName
 			return val, true
 		}
 	}
-	// Fallback: try root path for current env
-	if path == "/" && strings.EqualFold(envName, currentEnv) {
-		if pathBucket, ok := secretsDict[envKey]["/"]; ok {
-			if val, ok := pathBucket[keyName]; ok {
-				return val, true
-			}
-		}
-	}
 	return "", false
 }
 
 func findEnvKeyCaseInsensitive(secretsDict map[string]map[string]map[string]string, envName string) string {
+	// Exact match
 	if _, ok := secretsDict[envName]; ok {
 		return envName
 	}
+	// Case-insensitive exact match
 	for k := range secretsDict {
 		if strings.EqualFold(k, envName) {
 			return k
 		}
-	}
-	envLower := strings.ToLower(envName)
-	var partials []string
-	for k := range secretsDict {
-		kLower := strings.ToLower(k)
-		if strings.Contains(kLower, envLower) || strings.Contains(envLower, kLower) {
-			partials = append(partials, k)
-		}
-	}
-	if len(partials) > 0 {
-		shortest := partials[0]
-		for _, p := range partials[1:] {
-			if len(p) < len(shortest) {
-				shortest = p
-			}
-		}
-		return shortest
 	}
 	return ""
 }
