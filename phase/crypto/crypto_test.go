@@ -329,8 +329,12 @@ func TestRandomKeyPairDerivation(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 
+	derivedSlice, err := curve25519.X25519(kp.SecretKey[:], curve25519.Basepoint)
+	if err != nil {
+		t.Fatalf("X25519 error: %v", err)
+	}
 	var derived [32]byte
-	curve25519.ScalarBaseMult(&derived, &kp.SecretKey)
+	copy(derived[:], derivedSlice)
 	if derived != kp.PublicKey {
 		t.Error("public key not correctly derived from secret key")
 	}
