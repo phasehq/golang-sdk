@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/phasehq/golang-sdk/phase/network"
@@ -13,6 +12,16 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
 )
+
+// ZeroBytes wipes a byte slice to reduce key material exposure in memory.
+func ZeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+// zero is a package-internal alias for ZeroBytes.
+var zero = ZeroBytes
 
 // X25519 key pair for key exchange.
 type KeyPair struct {
@@ -36,7 +45,11 @@ func RandomKeyPair() (KeyPair, error) {
 	}
 
 	// Derive pk from sk key
-	curve25519.ScalarBaseMult(&public, &secret)
+	publicSlice, err := curve25519.X25519(secret[:], curve25519.Basepoint)
+	if err != nil {
+		return KeyPair{}, fmt.Errorf("failed to derive public key: %w", err)
+	}
+	copy(public[:], publicSlice)
 
 	return KeyPair{PublicKey: public, SecretKey: secret}, nil
 }
@@ -52,6 +65,7 @@ func ClientSessionKeys(kp KeyPair, serverPublicKey []byte) (SessionKeys, error) 
 	if err != nil {
 		return SessionKeys{}, fmt.Errorf("failed to compute shared secret: %w", err)
 	}
+	defer zero(shared)
 
 	// BLAKE2b-512(shared_secret || client_pk || server_pk)
 	h, err := blake2b.New512(nil)
@@ -62,6 +76,7 @@ func ClientSessionKeys(kp KeyPair, serverPublicKey []byte) (SessionKeys, error) 
 	h.Write(kp.PublicKey[:])
 	h.Write(serverPublicKey)
 	digest := h.Sum(nil)
+	defer zero(digest)
 
 	var keys SessionKeys
 	copy(keys.Rx[:], digest[:32])
@@ -81,6 +96,7 @@ func ServerSessionKeys(kp KeyPair, clientPublicKey []byte) (SessionKeys, error) 
 	if err != nil {
 		return SessionKeys{}, fmt.Errorf("failed to compute shared secret: %w", err)
 	}
+	defer zero(shared)
 
 	// BLAKE2b-512(shared_secret || client_pk || server_pk)
 	h, err := blake2b.New512(nil)
@@ -91,6 +107,7 @@ func ServerSessionKeys(kp KeyPair, clientPublicKey []byte) (SessionKeys, error) 
 	h.Write(clientPublicKey)
 	h.Write(kp.PublicKey[:])
 	digest := h.Sum(nil)
+	defer zero(digest)
 
 	// Server swaps Rx and Tx compared to client
 	var keys SessionKeys
@@ -121,9 +138,10 @@ func EncryptRaw(plaintext string, txKey [32]byte) ([]byte, error) {
 // DecryptRaw decrypts the combined ciphertext and nonce using the given key.
 func DecryptRaw(combinedCt []byte, rxKey [32]byte) ([]byte, error) {
 	nonceSize := chacha20poly1305.NonceSizeX
+	minSize := nonceSize + chacha20poly1305.Overhead
 
-	if len(combinedCt) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
+	if len(combinedCt) < minSize {
+		return nil, fmt.Errorf("ciphertext too short: minimum %d bytes, got %d", minSize, len(combinedCt))
 	}
 
 	// Extract the nonce from the end of the combined data
@@ -139,7 +157,6 @@ func DecryptRaw(combinedCt []byte, rxKey [32]byte) ([]byte, error) {
 	// Decrypt the ciphertext
 	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		log.Printf("Failed to decrypt: %v", err)
 		return nil, err
 	}
 
@@ -150,7 +167,6 @@ func DecryptRaw(combinedCt []byte, rxKey [32]byte) ([]byte, error) {
 func EncryptB64(plaintext string, key [32]byte) (string, error) {
 	rawCt, err := EncryptRaw(plaintext, key)
 	if err != nil {
-		log.Printf("Failed to encrypt to base64: %v\n", err)
 		return "", err
 	}
 	encoded := base64.StdEncoding.EncodeToString(rawCt)
@@ -161,24 +177,20 @@ func EncryptB64(plaintext string, key [32]byte) (string, error) {
 func DecryptB64(b64Ct string, key [32]byte) (string, error) {
 	ct, err := base64.StdEncoding.DecodeString(b64Ct)
 	if err != nil {
-		log.Printf("Failed to decode base64 ciphertext: %v\n", err)
-		return "", err
+		return "", fmt.Errorf("failed to decode base64 ciphertext: %w", err)
 	}
 	plaintextBytes, err := DecryptRaw(ct, key)
 	if err != nil {
-		log.Printf("Failed to decrypt base64 ciphertext: %v\n", err)
 		return "", err
 	}
-	plaintext := string(plaintextBytes)
-	return plaintext, nil
+	return string(plaintextBytes), nil
 }
 
 // EncryptAsymmetric takes plaintext and a recipient's public key in hex, encrypts the plaintext, and returns a formatted ciphertext.
 func EncryptAsymmetric(plaintext, publicKeyHex string) (string, error) {
 	recipientPubKeyBytes, err := hex.DecodeString(publicKeyHex)
 	if err != nil {
-		log.Printf("Failed to decode public key hex: %v\n", err)
-		return "", err
+		return "", fmt.Errorf("failed to decode public key hex: %w", err)
 	}
 
 	// Spin up ephemeral X25519 keys
@@ -186,12 +198,15 @@ func EncryptAsymmetric(plaintext, publicKeyHex string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer zero(kp.SecretKey[:])
 
 	// Perform a DHKA
 	sessionKeys, err := ClientSessionKeys(kp, recipientPubKeyBytes)
 	if err != nil {
 		return "", err
 	}
+	defer zero(sessionKeys.Tx[:])
+	defer zero(sessionKeys.Rx[:])
 
 	// Encrypt data with XChaCha20-Poly1305
 	ciphertext, err := EncryptB64(plaintext, sessionKeys.Tx)
@@ -206,41 +221,43 @@ func EncryptAsymmetric(plaintext, publicKeyHex string) (string, error) {
 // DecryptAsymmetric decrypts a ciphertext string using the provided private and public keys.
 func DecryptAsymmetric(ciphertextString, privateKeyHex, publicKeyHex string) (string, error) {
 	segments := strings.Split(ciphertextString, ":")
+	if len(segments) != 4 || segments[0] != "ph" {
+		return "", fmt.Errorf("invalid ciphertext format: expected 4 colon-separated segments starting with 'ph', got %d segments", len(segments))
+	}
 
 	version := segments[1]
 	if version != "v1" {
-		err := fmt.Errorf("unsupported version: %s", version)
-		log.Println(err)
-		return "", err
+		return "", fmt.Errorf("unsupported version: %s", version)
 	}
 
 	ephemeralPublicKeyBytes, err := hex.DecodeString(segments[2])
 	if err != nil {
-		log.Printf("Failed to decode ephemeral public key hex: %v\n", err)
-		return "", err
+		return "", fmt.Errorf("failed to decode ephemeral public key hex: %w", err)
 	}
 
 	privateKeyBytes, err := hex.DecodeString(privateKeyHex)
 	if err != nil {
-		log.Printf("Failed to decode private key hex: %v\n", err)
-		return "", err
+		return "", fmt.Errorf("failed to decode private key hex: %w", err)
 	}
+	defer zero(privateKeyBytes)
 
 	publicKeyBytes, err := hex.DecodeString(publicKeyHex)
 	if err != nil {
-		log.Printf("Failed to decode public key hex: %v\n", err)
-		return "", err
+		return "", fmt.Errorf("failed to decode public key hex: %w", err)
 	}
 
 	var kp KeyPair
 	copy(kp.PublicKey[:], publicKeyBytes)
 	copy(kp.SecretKey[:], privateKeyBytes)
+	defer zero(kp.SecretKey[:])
 
 	// Perform DHKA
 	sessionKeys, err := ServerSessionKeys(kp, ephemeralPublicKeyBytes)
 	if err != nil {
 		return "", err
 	}
+	defer zero(sessionKeys.Rx[:])
+	defer zero(sessionKeys.Tx[:])
 
 	// Extract ciphertext from ph.
 	ciphertextB64 := segments[3]
@@ -248,8 +265,7 @@ func DecryptAsymmetric(ciphertextString, privateKeyHex, publicKeyHex string) (st
 	// Decrypt data with XChaCha20-Poly1305
 	plaintext, err := DecryptB64(ciphertextB64, sessionKeys.Rx)
 	if err != nil {
-		log.Printf("Failed to decrypt asymmetrically: %v\n", err)
-		return "", err
+		return "", fmt.Errorf("failed to decrypt: %w", err)
 	}
 	return plaintext, nil
 }
@@ -264,7 +280,6 @@ func DecryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex st
 	}
 	decryptedKey, err = DecryptAsymmetric(key, privateKeyHex, publicKeyHex)
 	if err != nil {
-		log.Printf("Failed to decrypt key: %v\n", err)
 		return
 	}
 
@@ -276,7 +291,6 @@ func DecryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex st
 	}
 	decryptedValue, err = DecryptAsymmetric(value, privateKeyHex, publicKeyHex)
 	if err != nil {
-		log.Printf("Failed to decrypt value: %v\n", err)
 		return
 	}
 
@@ -285,7 +299,7 @@ func DecryptSecret(secret map[string]interface{}, privateKeyHex, publicKeyHex st
 	if ok && comment != "" {
 		decryptedComment, err = DecryptAsymmetric(comment, privateKeyHex, publicKeyHex)
 		if err != nil {
-			log.Printf("Failed to decrypt comment: %v\n", err)
+			// Comments are optional; clear error
 			err = nil
 		}
 	}
@@ -298,49 +312,46 @@ func DecryptWrappedKeyShare(Keyshare1 string, Keyshare0 string, TokenType string
 	// Fetch the wrapped key share using the app token and host
 	wrappedKeyShare, err := network.FetchAppKey(TokenType, AppToken, Host)
 	if err != nil {
-		log.Fatalf("Failed to fetch wrapped key share: %v", err)
-		return "", err
+		return "", fmt.Errorf("failed to fetch wrapped key share: %w", err)
 	}
 
 	// Decode the wrapped key share from hex
 	wrappedKeyShareBytes, err := hex.DecodeString(wrappedKeyShare)
 	if err != nil {
-		log.Fatalf("Failed to decode wrapped key share from hex: %v", err)
-		return "", err
+		return "", fmt.Errorf("failed to decode wrapped key share from hex: %w", err)
 	}
 
 	// Decode Keyshare1UnwrapKey from hex, ensuring it's correctly sized
 	keyshare1UnwrapKeyBytes, err := hex.DecodeString(Keyshare1UnwrapKey)
 	if err != nil {
-		log.Fatalf("Failed to decode Keyshare1UnwrapKey from hex: %v", err)
-		return "", err
+		return "", fmt.Errorf("failed to decode Keyshare1UnwrapKey from hex: %w", err)
 	}
+	defer zero(keyshare1UnwrapKeyBytes)
+
 	if len(keyshare1UnwrapKeyBytes) != 32 {
-		log.Fatalf("Incorrect Keyshare1UnwrapKey size: expected 32 bytes, got %d", len(keyshare1UnwrapKeyBytes))
 		return "", fmt.Errorf("incorrect Keyshare1UnwrapKey size: expected 32 bytes, got %d", len(keyshare1UnwrapKeyBytes))
 	}
 
 	var unwrapKey [32]byte
 	copy(unwrapKey[:], keyshare1UnwrapKeyBytes)
+	defer zero(unwrapKey[:])
 
 	keyshare1, err := DecryptRaw(wrappedKeyShareBytes, unwrapKey)
 	if err != nil {
-		log.Fatalf("Failed to decrypt wrapped key share: %v", err)
-		return "", err
+		return "", fmt.Errorf("failed to decrypt wrapped key share: %w", err)
 	}
+	defer zero(keyshare1)
 
 	// Reconstruct the application's private key
 	appPrivateKey, err := ReconstructSecret(Keyshare0, string(keyshare1))
 	if err != nil {
-		log.Fatalf("Failed to reconstruct application's private key: %v", err)
-		return "", err
+		return "", fmt.Errorf("failed to reconstruct application's private key: %w", err)
 	}
 
 	// Decrypt the ciphertext using the application's private key
 	plaintext, err := DecryptAsymmetric(Keyshare1, appPrivateKey, PssUserPublicKey)
 	if err != nil {
-		log.Fatalf("Failed to decrypt ciphertext: %v", err)
-		return "", err
+		return "", fmt.Errorf("failed to decrypt ciphertext: %w", err)
 	}
 
 	return plaintext, nil
@@ -362,11 +373,18 @@ func GenerateEnvKeyPair(seed string) (publicKeyHex, privateKeyHex string, err er
 	}
 	h.Write(seedBytes)
 	secret := h.Sum(nil)
+	defer zero(secret)
 
 	// Derive public key from secret key
 	var secretArr, public [32]byte
 	copy(secretArr[:], secret)
-	curve25519.ScalarBaseMult(&public, &secretArr)
+	defer zero(secretArr[:])
+
+	publicSlice, err := curve25519.X25519(secretArr[:], curve25519.Basepoint)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to derive public key: %w", err)
+	}
+	copy(public[:], publicSlice)
 
 	publicKeyHex = hex.EncodeToString(public[:])
 	privateKeyHex = hex.EncodeToString(secretArr[:])
@@ -382,8 +400,7 @@ func Blake2bDigest(inputStr, salt string) (string, error) {
 		// Use keyed BLAKE2b
 		hasher, err := blake2b.New256([]byte(salt))
 		if err != nil {
-			log.Printf("Failed to create keyed BLAKE2b hasher: %v\n", err)
-			return "", err
+			return "", fmt.Errorf("failed to create keyed BLAKE2b hasher: %w", err)
 		}
 		hasher.Write([]byte(inputStr))
 		sum := hasher.Sum(nil)
