@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/phasehq/golang-sdk/phase/crypto"
@@ -13,17 +14,35 @@ import (
 
 // Phase config
 type Phase struct {
-	Prefix             string
-	PesVersion         string
+	prefix             string
+	pesVersion         string
 	AppToken           string
-	PssUserPublicKey   string
-	Keyshare0          string
-	Keyshare1UnwrapKey string
+	pssUserPublicKey   string
+	keyshare0          string
+	keyshare1UnwrapKey string
 	Host               string
 	Debug              bool
 	TokenType          string
 	IsServiceToken     bool
 	IsUserToken        bool
+}
+
+// Return when a secret key does not exist at the specified path.
+type ErrSecretNotFound struct {
+	Key  string
+	Path string
+}
+
+func (e *ErrSecretNotFound) Error() string {
+	return fmt.Sprintf("secret '%s' not found in path '%s'", e.Key, e.Path)
+}
+
+// debugf logs a message only when Debug mode is enabled.
+// Callers can redirect output via log.SetOutput().
+func (p *Phase) debugf(format string, args ...interface{}) {
+	if p.Debug {
+		log.Printf("[phase] "+format, args...)
+	}
 }
 
 // Decrypted secrets from API response
@@ -108,12 +127,12 @@ func New(token, host string, debug bool) (*Phase, error) {
 	if len(serviceMatches) == 6 {
 		p.IsServiceToken = true
 		version := serviceMatches[1]
-		p.Prefix = "pss_service"
-		p.PesVersion = "v" + version
+		p.prefix = "pss_service"
+		p.pesVersion = "v" + version
 		p.AppToken = serviceMatches[2]
-		p.PssUserPublicKey = serviceMatches[3]
-		p.Keyshare0 = serviceMatches[4]
-		p.Keyshare1UnwrapKey = serviceMatches[5]
+		p.pssUserPublicKey = serviceMatches[3]
+		p.keyshare0 = serviceMatches[4]
+		p.keyshare1UnwrapKey = serviceMatches[5]
 		if version == "2" {
 			p.TokenType = "ServiceAccount"
 		} else {
@@ -122,12 +141,12 @@ func New(token, host string, debug bool) (*Phase, error) {
 	} else if len(userMatches) == 6 {
 		p.IsUserToken = true
 		version := userMatches[1]
-		p.Prefix = "pss_user"
-		p.PesVersion = "v" + version
+		p.prefix = "pss_user"
+		p.pesVersion = "v" + version
 		p.AppToken = userMatches[2]
-		p.PssUserPublicKey = userMatches[3]
-		p.Keyshare0 = userMatches[4]
-		p.Keyshare1UnwrapKey = userMatches[5]
+		p.pssUserPublicKey = userMatches[3]
+		p.keyshare0 = userMatches[4]
+		p.keyshare1UnwrapKey = userMatches[5]
 		p.TokenType = "User"
 	} else {
 		tokenType := "service token"
@@ -140,16 +159,15 @@ func New(token, host string, debug bool) (*Phase, error) {
 	return p, nil
 }
 
-// Decrypt wrapped key share for the user tokens rereponse
-func (p *Phase) Decrypt(phaseCiphertext string, wrappedKeyShareData map[string]interface{}) (string, error) {
+// Decrypt decrypts a wrapped ciphertext using the Phase encryption mechanism.
+func (p *Phase) Decrypt(phaseCiphertext string, wrappedKeyShare string) (string, error) {
 	segments := strings.Split(phaseCiphertext, ":")
 	if len(segments) != 4 || segments[0] != "ph" {
 		return "", fmt.Errorf("ciphertext is invalid")
 	}
 
-	wrappedKeyShare, ok := wrappedKeyShareData["wrapped_key_share"].(string)
-	if !ok || wrappedKeyShare == "" {
-		return "", fmt.Errorf("wrapped key share not found in the response")
+	if wrappedKeyShare == "" {
+		return "", fmt.Errorf("wrapped key share is empty")
 	}
 
 	wrappedKeyShareBytes, err := hex.DecodeString(wrappedKeyShare)
@@ -157,25 +175,28 @@ func (p *Phase) Decrypt(phaseCiphertext string, wrappedKeyShareData map[string]i
 		return "", fmt.Errorf("failed to decode wrapped key share: %w", err)
 	}
 
-	unwrapKeyBytes, err := hex.DecodeString(p.Keyshare1UnwrapKey)
+	unwrapKeyBytes, err := hex.DecodeString(p.keyshare1UnwrapKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode keyshare1 unwrap key: %w", err)
 	}
+	defer crypto.ZeroBytes(unwrapKeyBytes)
 
 	var unwrapKey [32]byte
 	copy(unwrapKey[:], unwrapKeyBytes)
+	defer crypto.ZeroBytes(unwrapKey[:])
 
 	keyshare1Bytes, err := crypto.DecryptRaw(wrappedKeyShareBytes, unwrapKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to decrypt wrapped key share: %w", err)
 	}
+	defer crypto.ZeroBytes(keyshare1Bytes)
 
-	appPrivKey, err := crypto.ReconstructSecret(p.Keyshare0, string(keyshare1Bytes))
+	appPrivKey, err := crypto.ReconstructSecret(p.keyshare0, string(keyshare1Bytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to reconstruct app private key: %w", err)
 	}
 
-	plaintext, err := crypto.DecryptAsymmetric(phaseCiphertext, appPrivKey, p.PssUserPublicKey)
+	plaintext, err := crypto.DecryptAsymmetric(phaseCiphertext, appPrivKey, p.pssUserPublicKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to decrypt: %w", err)
 	}
@@ -195,14 +216,6 @@ func (p *Phase) findMatchingEnvironmentKey(userData *misc.AppKeyResponse, envID 
 	return nil
 }
 
-// appKeyResponseToMap converts AppKeyResponse to a generic map for Decrypt().
-func appKeyResponseToMap(resp *misc.AppKeyResponse) map[string]interface{} {
-	data, _ := json.Marshal(resp)
-	var result map[string]interface{}
-	json.Unmarshal(data, &result)
-	return result
-}
-
 // GET SECRETS
 func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 	results, err := p.fetchSecrets(opts)
@@ -218,6 +231,7 @@ func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 		}
 		resolvedValue, err := ResolveAllSecrets(secret.Value, results, p, secret.Application, secret.Environment)
 		if err != nil {
+			p.debugf("failed to resolve references in key %s: %v", secret.Key, err)
 			continue // Keep original unresolved value
 		}
 		results[i].Value = resolvedValue
@@ -250,8 +264,7 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 	}
 
 	// Decrypt wrapped seed to get env keypair
-	userDataMap := appKeyResponseToMap(&userData)
-	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userDataMap)
+	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userData.WrappedKeyShare)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt wrapped seed: %w", err)
 	}
@@ -264,7 +277,7 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 	// Compute key digest for single-key lookups
 	var keyDigest string
 	if len(opts.Keys) == 1 {
-		decryptedSalt, saltErr := p.Decrypt(envKey.WrappedSalt, userDataMap)
+		decryptedSalt, saltErr := p.Decrypt(envKey.WrappedSalt, userData.WrappedKeyShare)
 		if saltErr == nil {
 			keyDigest, _ = crypto.Blake2bDigest(opts.Keys[0], decryptedSalt)
 		}
@@ -314,11 +327,13 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 
 		decryptedKey, err := crypto.DecryptAsymmetric(keyToDecrypt, envPrivKey, publicKey)
 		if err != nil {
+			p.debugf("failed to decrypt key: %v", err)
 			continue
 		}
 
 		decryptedValue, err := crypto.DecryptAsymmetric(valueToDecrypt, envPrivKey, publicKey)
 		if err != nil {
+			p.debugf("failed to decrypt value for key %s: %v", decryptedKey, err)
 			continue
 		}
 
@@ -391,8 +406,7 @@ func (p *Phase) Create(opts CreateOptions) error {
 		return fmt.Errorf("no environment found with id: %s", envID)
 	}
 
-	userDataMap := appKeyResponseToMap(&userData)
-	decryptedSalt, err := p.Decrypt(envKey.WrappedSalt, userDataMap)
+	decryptedSalt, err := p.Decrypt(envKey.WrappedSalt, userData.WrappedKeyShare)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt wrapped salt: %w", err)
 	}
@@ -446,50 +460,55 @@ func (p *Phase) Create(opts CreateOptions) error {
 }
 
 // UPDATE SECRETS
-func (p *Phase) Update(opts UpdateOptions) (string, error) {
+func (p *Phase) Update(opts UpdateOptions) error {
 	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer resp.Body.Close()
 
 	var userData misc.AppKeyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		return "", fmt.Errorf("failed to decode user data: %w", err)
+		return fmt.Errorf("failed to decode user data: %w", err)
 	}
 
 	_, _, _, envID, publicKey, err := misc.PhaseGetContext(&userData, opts.AppName, opts.EnvName, opts.AppID)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	envKey := p.findMatchingEnvironmentKey(&userData, envID)
 	if envKey == nil {
-		return "", fmt.Errorf("no environment found with id: %s", envID)
+		return fmt.Errorf("no environment found with id: %s", envID)
 	}
 
 	// Fetch secrets from source path
 	sourcePath := opts.SourcePath
 	secrets, err := network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, sourcePath, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch secrets: %w", err)
+		return fmt.Errorf("failed to fetch secrets: %w", err)
 	}
 
 	// Decrypt seed to get env keypair
-	userDataMap := appKeyResponseToMap(&userData)
-	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userDataMap)
+	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userData.WrappedKeyShare)
 	if err != nil {
-		return "", fmt.Errorf("failed to decrypt wrapped seed: %w", err)
+		return fmt.Errorf("failed to decrypt wrapped seed: %w", err)
 	}
 
 	_, envPrivKey, err := crypto.GenerateEnvKeyPair(decryptedSeed)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate env key pair: %w", err)
+		return fmt.Errorf("failed to generate env key pair: %w", err)
 	}
 
-	// Find matching secret
+	// Find matching secret, filtering by source path when specified.
 	var matchingSecret map[string]interface{}
 	for _, secret := range secrets {
+		if sourcePath != "" {
+			secretPath, _ := secret["path"].(string)
+			if secretPath != sourcePath {
+				continue
+			}
+		}
 		encKey, _ := secret["key"].(string)
 		dk, err := crypto.DecryptAsymmetric(encKey, envPrivKey, publicKey)
 		if err != nil {
@@ -502,29 +521,29 @@ func (p *Phase) Update(opts UpdateOptions) (string, error) {
 	}
 
 	if matchingSecret == nil {
-		return fmt.Sprintf("Key '%s' doesn't exist in path '%s'.", opts.Key, sourcePath), nil
+		return &ErrSecretNotFound{Key: opts.Key, Path: sourcePath}
 	}
 
 	// Encrypt key and value
 	encryptedKey, err := crypto.EncryptAsymmetric(opts.Key, publicKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to encrypt key: %w", err)
+		return fmt.Errorf("failed to encrypt key: %w", err)
 	}
 
 	encryptedValue, err := crypto.EncryptAsymmetric(opts.Value, publicKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to encrypt value: %w", err)
+		return fmt.Errorf("failed to encrypt value: %w", err)
 	}
 
 	// Get key digest
-	decryptedSalt, err := p.Decrypt(envKey.WrappedSalt, userDataMap)
+	decryptedSalt, err := p.Decrypt(envKey.WrappedSalt, userData.WrappedKeyShare)
 	if err != nil {
-		return "", fmt.Errorf("failed to decrypt wrapped salt: %w", err)
+		return fmt.Errorf("failed to decrypt wrapped salt: %w", err)
 	}
 
 	keyDigest, err := crypto.Blake2bDigest(opts.Key, decryptedSalt)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate key digest: %w", err)
+		return fmt.Errorf("failed to generate key digest: %w", err)
 	}
 
 	// Determine payload value
@@ -554,7 +573,7 @@ func (p *Phase) Update(opts UpdateOptions) (string, error) {
 	if opts.ToggleOverride {
 		override, hasOverride := matchingSecret["override"].(map[string]interface{})
 		if !hasOverride || override == nil {
-			return "", fmt.Errorf("no override found for key '%s'. Create one first with --override", opts.Key)
+			return fmt.Errorf("no override found for key '%s'. Create one first with --override", opts.Key)
 		}
 		currentState := misc.GetBool(override, "is_active")
 		payload["override"] = map[string]interface{}{
@@ -582,10 +601,10 @@ func (p *Phase) Update(opts UpdateOptions) (string, error) {
 
 	err = network.UpdatePhaseSecrets(p.TokenType, p.AppToken, envID, []map[string]interface{}{payload}, p.Host)
 	if err != nil {
-		return "", fmt.Errorf("failed to update secret: %w", err)
+		return fmt.Errorf("failed to update secret: %w", err)
 	}
 
-	return "Success", nil
+	return nil
 }
 
 // DELETE SECRETS
@@ -612,8 +631,7 @@ func (p *Phase) Delete(opts DeleteOptions) ([]string, error) {
 	}
 
 	// Decrypt seed to get env keypair
-	userDataMap := appKeyResponseToMap(&userData)
-	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userDataMap)
+	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userData.WrappedKeyShare)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt wrapped seed: %w", err)
 	}
