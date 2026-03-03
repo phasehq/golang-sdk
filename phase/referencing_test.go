@@ -19,6 +19,9 @@ func TestNormalizePath(t *testing.T) {
 	if got := normalizePath("/backend"); got != "/backend" {
 		t.Fatalf("normalizePath(\"/backend\") = %q, want /backend", got)
 	}
+	if got := normalizePath("/backend/"); got != "/backend" {
+		t.Fatalf("normalizePath(\"/backend/\") = %q, want /backend", got)
+	}
 }
 
 func TestSplitPathAndKey(t *testing.T) {
@@ -61,17 +64,23 @@ func TestParseReferenceContext_CrossAppRequiresEnv(t *testing.T) {
 	}
 }
 
-func TestFindEnvKeyCaseInsensitiveAndPartial(t *testing.T) {
+func TestFindEnvKeyCaseInsensitive(t *testing.T) {
 	secretsDict := map[string]map[string]map[string]string{
 		"Development": {"/": {"DEBUG": "true"}},
 		"dev":         {"/": {"DEBUG": "short"}},
 	}
 
+	// Exact match
+	if got := findEnvKeyCaseInsensitive(secretsDict, "dev"); got != "dev" {
+		t.Fatalf("expected exact match dev, got %q", got)
+	}
+	// Case-insensitive exact match
 	if got := findEnvKeyCaseInsensitive(secretsDict, "development"); got != "Development" {
 		t.Fatalf("expected case-insensitive match Development, got %q", got)
 	}
-	if got := findEnvKeyCaseInsensitive(secretsDict, "de"); got != "dev" {
-		t.Fatalf("expected shortest partial match dev, got %q", got)
+	// No partial matching - "de" should not match
+	if got := findEnvKeyCaseInsensitive(secretsDict, "de"); got != "" {
+		t.Fatalf("expected no partial match, got %q", got)
 	}
 }
 
@@ -129,7 +138,7 @@ func TestResolveAllSecrets_CrossAppRecursive(t *testing.T) {
 	}
 }
 
-func TestResolveAllSecrets_CycleDoesNotInfiniteLoop(t *testing.T) {
+func TestResolveAllSecrets_CycleReturnsError(t *testing.T) {
 	ResetSecretsCache()
 	t.Cleanup(ResetSecretsCache)
 
@@ -139,12 +148,12 @@ func TestResolveAllSecrets_CycleDoesNotInfiniteLoop(t *testing.T) {
 		"C": "${A}",
 	})
 
-	got, err := ResolveAllSecrets("X=${other_app::dev.A}", nil, nil, "test_app", "current")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := ResolveAllSecrets("X=${other_app::dev.A}", nil, nil, "test_app", "current")
+	if err == nil {
+		t.Fatal("expected error for circular reference")
 	}
-	if !strings.Contains(got, "${") {
-		t.Fatalf("expected unresolved placeholder due to cycle, got %q", got)
+	if !strings.Contains(err.Error(), "circular reference detected") {
+		t.Fatalf("expected circular reference error, got: %v", err)
 	}
 }
 
@@ -178,6 +187,27 @@ func TestResolveAllSecrets_MultipleOccurrences(t *testing.T) {
 	}
 	if got != "A=v;B=v" {
 		t.Fatalf("unexpected repeated-reference result: %q", got)
+	}
+}
+
+func TestResolveAllSecrets_TrailingSlashPathNormalization(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	// API returns path "/backend/" (trailing slash); reference uses "/backend/KEY"
+	// which splitPathAndKey normalises to path="/backend", key="KEY".
+	// The lookup must still succeed.
+	app := "test_app"
+	allSecrets := []SecretResult{
+		{Application: app, Environment: "current", Path: "/backend/", Key: "KEY", Value: "found"},
+	}
+
+	got, err := ResolveAllSecrets("${current./backend/KEY}", allSecrets, nil, app, "current")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "found" {
+		t.Fatalf("expected %q, got %q — trailing-slash path mismatch", "found", got)
 	}
 }
 
