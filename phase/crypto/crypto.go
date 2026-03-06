@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/phasehq/golang-sdk/phase/network"
+	"github.com/phasehq/golang-sdk/v2/phase/network"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"

@@ -19,9 +19,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/phasehq/golang-sdk/phase"
-	"github.com/phasehq/golang-sdk/phase/misc"
-	"github.com/phasehq/golang-sdk/phase/network"
+	"github.com/phasehq/golang-sdk/v2/phase"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
+	"github.com/phasehq/golang-sdk/v2/phase/network"
 )
 
 // testSecret describes a secret to create.

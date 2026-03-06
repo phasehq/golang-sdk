@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phasehq/golang-sdk/phase/misc"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
 )
 
 func ConstructHTTPHeaders(tokenType string, appToken string) http.Header {

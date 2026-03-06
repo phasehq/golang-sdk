@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phasehq/golang-sdk/phase/misc"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
 )
 
 func makeHex(n int, ch string) string {

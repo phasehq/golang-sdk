@@ -25,11 +25,11 @@ The Phase Go SDK provides end-to-end encrypted secret management for your applic
 ## Installation
 
 ```bash
-go get github.com/phasehq/golang-sdk/phase
+go get github.com/phasehq/golang-sdk/v2/phase
 ```
 
 ```go
-import "github.com/phasehq/golang-sdk/phase"
+import "github.com/phasehq/golang-sdk/v2/phase"
 ```
 
 ## Quick Start
@@ -41,7 +41,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/phasehq/golang-sdk/phase"
+    "github.com/phasehq/golang-sdk/v2/phase"
 )
 
 func main() {

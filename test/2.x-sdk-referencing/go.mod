@@ -4,9 +4,9 @@ go 1.22
 
 toolchain go1.24.13
 
-require github.com/phasehq/golang-sdk v0.0.0
+require github.com/phasehq/golang-sdk/v2 v2.0.0
 
-replace github.com/phasehq/golang-sdk => ../..
+replace github.com/phasehq/golang-sdk/v2 => ../..
 
 require (
 	golang.org/x/crypto v0.31.0 // indirect

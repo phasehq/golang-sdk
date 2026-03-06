@@ -7,9 +7,9 @@ import (
 	"log"
 	"strings"
 
-	"github.com/phasehq/golang-sdk/phase/crypto"
-	"github.com/phasehq/golang-sdk/phase/misc"
-	"github.com/phasehq/golang-sdk/phase/network"
+	"github.com/phasehq/golang-sdk/v2/phase/crypto"
+	"github.com/phasehq/golang-sdk/v2/phase/misc"
+	"github.com/phasehq/golang-sdk/v2/phase/network"
 )
 
 // Phase config
