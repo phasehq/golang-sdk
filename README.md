@@ -118,12 +118,6 @@ secrets, err := p.Get(phase.GetOptions{
     Lease:   true,
 })
 
-// Get raw values without resolving ${REF} references
-secrets, err := p.Get(phase.GetOptions{
-    EnvName: "Production",
-    AppName: "MyApp",
-    Raw:     true,
-})
 ```
 
 Each secret is returned as a `SecretResult`:
