@@ -76,6 +76,7 @@ type GetOptions struct {
 	Dynamic  bool
 	Lease    bool
 	LeaseTTL *int
+	Raw      bool // When true, return raw secret values without resolving references
 }
 
 // CREATE SECRETS
@@ -223,18 +224,20 @@ func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 		return nil, err
 	}
 
-	// Resolve secret references
-	ResetSecretsCache()
-	for i, secret := range results {
-		if secret.Value == "" {
-			continue
+	if !opts.Raw {
+		// Resolve secret references
+		ResetSecretsCache()
+		for i, secret := range results {
+			if secret.Value == "" {
+				continue
+			}
+			resolvedValue, err := ResolveAllSecrets(secret.Value, results, p, secret.Application, secret.Environment)
+			if err != nil {
+				p.debugf("failed to resolve references in key %s: %v", secret.Key, err)
+				continue // Keep original unresolved value
+			}
+			results[i].Value = resolvedValue
 		}
-		resolvedValue, err := ResolveAllSecrets(secret.Value, results, p, secret.Application, secret.Environment)
-		if err != nil {
-			p.debugf("failed to resolve references in key %s: %v", secret.Key, err)
-			continue // Keep original unresolved value
-		}
-		results[i].Value = resolvedValue
 	}
 
 	return results, nil
