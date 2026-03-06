@@ -1,4 +1,4 @@
-// Test program for verifying secret reference resolution using the OLD Phase Go SDK (v1).
+// Test program for verifying secret reference resolution using the Phase Go SDK (v2.x).
 //
 // This program:
 // 1. Creates base secrets across two apps, multiple envs and paths
@@ -45,6 +45,7 @@ func main() {
 	token := flag.String("token", "", "Phase service/user token with access to both apps")
 	host := flag.String("host", "https://localhost", "Phase console URL")
 	skipCleanup := flag.Bool("skip-cleanup", false, "Skip deleting test secrets after run")
+	cleanupOnly := flag.Bool("cleanup-only", false, "Only delete test secrets, don't create or test")
 	flag.Parse()
 
 	if *token == "" {
@@ -56,10 +57,14 @@ func main() {
 	// Disable SSL verification for local self-signed certs
 	misc.VerifySSL = false
 
-	fmt.Println("=== Phase Old SDK Reference Resolution Test ===")
+	fmt.Println("=== Phase 2.x SDK Reference Resolution Test ===")
 	fmt.Println()
 
-	p := phase.Init(*token, *host, false)
+	p, err := phase.New(*token, *host, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  FAIL  could not init Phase client: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Print available apps/envs so we can verify the names match
 	fmt.Println("[DEBUG] Fetching available apps and environments...")
@@ -81,9 +86,7 @@ func main() {
 	}
 	fmt.Println()
 
-	// ----------------------------------------------------------------
-	// Base secrets (the targets that references point to)
-	// ----------------------------------------------------------------
+	// Define all secrets up front (needed for cleanup-only mode too)
 	baseSecrets := []testSecret{
 		{"test-chamber", "Development", "BASE_SECRET", "hello_from_base", ""},
 		{"test-chamber", "Development", "DB_PASS", "pg_password_123", "/backend"},
@@ -91,9 +94,6 @@ func main() {
 		{"gravity-gun", "Development", "GRAVITY_KEY", "gravity_key_value", ""},
 	}
 
-	// ----------------------------------------------------------------
-	// Referencing secrets (values contain ${...} syntax)
-	// ----------------------------------------------------------------
 	refSecrets := []testSecret{
 		{"test-chamber", "Development", "REF_SAME_ENV", "${BASE_SECRET}", ""},
 		{"test-chamber", "Development", "REF_DIFF_PATH", "${/backend/DB_PASS}", ""},
@@ -101,9 +101,13 @@ func main() {
 		{"test-chamber", "Development", "REF_CROSS_APP", "${gravity-gun::Development.GRAVITY_KEY}", ""},
 	}
 
-	// ----------------------------------------------------------------
-	// Expected resolutions
-	// ----------------------------------------------------------------
+	// Handle cleanup-only mode
+	if *cleanupOnly {
+		cleanup(p, baseSecrets, refSecrets)
+		fmt.Println("Cleanup complete.")
+		return
+	}
+
 	tests := []refTest{
 		{"same env, root path", "REF_SAME_ENV", "${BASE_SECRET}", "hello_from_base"},
 		{"same env, different path", "REF_DIFF_PATH", "${/backend/DB_PASS}", "pg_password_123"},
@@ -149,23 +153,23 @@ func main() {
 	failed := 0
 
 	for _, tc := range tests {
-		result, err := p.Get(phase.GetSecretOptions{
-			EnvName:   "Development",
-			AppName:   "test-chamber",
-			KeyToFind: tc.key,
+		results, err := p.Get(phase.GetOptions{
+			EnvName: "Development",
+			AppName: "test-chamber",
+			Keys:    []string{tc.key},
 		})
 		if err != nil {
 			fmt.Printf("  FAIL  %s (%s): fetch error: %v\n", tc.key, tc.name, err)
 			failed++
 			continue
 		}
-		if result == nil {
-			fmt.Printf("  FAIL  %s (%s): Get() returned nil\n", tc.key, tc.name)
+		if len(results) == 0 {
+			fmt.Printf("  FAIL  %s (%s): Get() returned no results\n", tc.key, tc.name)
 			failed++
 			continue
 		}
 
-		got, _ := (*result)["value"].(string)
+		got := results[0].Value
 
 		if got == tc.expected {
 			fmt.Printf("  PASS  %s (%s)\n", tc.key, tc.name)
@@ -208,13 +212,13 @@ func main() {
 }
 
 func createSecret(p *phase.Phase, s testSecret) error {
-	opts := phase.CreateSecretsOptions{
-		KeyValuePairs: []map[string]string{{s.key: s.value}},
+	opts := phase.CreateOptions{
+		KeyValuePairs: []phase.KeyValuePair{{Key: s.key, Value: s.value}},
 		EnvName:       s.envName,
 		AppName:       s.appName,
 	}
 	if s.path != "" {
-		opts.SecretPath = map[string]string{s.key: s.path}
+		opts.Path = s.path
 	}
 	return p.Create(opts)
 }
@@ -228,11 +232,11 @@ func cleanup(p *phase.Phase, baseSecrets, refSecrets []testSecret) {
 	errors := 0
 
 	for _, s := range allSecrets {
-		err := p.Delete(phase.DeleteSecretOptions{
-			EnvName:     s.envName,
-			AppName:     s.appName,
-			KeyToDelete: s.key,
-			SecretPath:  s.path,
+		_, err := p.Delete(phase.DeleteOptions{
+			EnvName:      s.envName,
+			AppName:      s.appName,
+			KeysToDelete: []string{s.key},
+			Path:         s.path,
 		})
 		if err != nil {
 			// Don't fail hard on cleanup errors — the secret may not have been created
