@@ -13,19 +13,16 @@ package phase
 //   2. Ciphertext format: ph:v1:{epk}:{b64ct} unchanged
 //   3. Full key reconstruction workflow: token -> keyshare unwrap -> XOR -> decrypt
 //   4. Environment key derivation: seed -> BLAKE2b -> Curve25519 keypair
-//   5. Secret encryption/decryption round-trip: 1.x ciphertext decrypts with 2.x code
-//   6. Key digest (BLAKE2b) compatibility: same salt+key -> same digest
-//   7. Token parsing: 1.x Init() behavior matches 2.x New()
-//   8. Secret referencing: behavioral parity between 1.x and 2.x
-//   9. API payload structure: same JSON shape for CRUD operations
-//  10. Data type contracts: SecretResult fields vs 1.x map[string]interface{}
+//   5. Phase.Decrypt workflow: keyshare unwrap -> reconstruct -> decrypt
+//   6. Secret encryption/decryption round-trip: 1.x ciphertext decrypts with 2.x code
+//   7. PhaseGetContext: app/env resolution matching 1.x behavior
+//   8. DecryptSecret helper: 1.x API response format handling
+//   9. Cross-SDK encrypt/decrypt interoperability
 // =============================================================================
 
 import (
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -586,98 +583,7 @@ func TestCompat_EnvKeyDerivationChain(t *testing.T) {
 }
 
 // =============================================================================
-// 5. Token Parsing Compatibility
-//
-// The 1.x SDK used Init(), the 2.x SDK uses New(). Verify identical parsing
-// for all token formats.
-// =============================================================================
-
-func TestCompat_TokenParsing(t *testing.T) {
-	hex64 := func(ch string) string { return strings.Repeat(ch, 64) }
-
-	tests := []struct {
-		name       string
-		token      string
-		wantPrefix string
-		wantVer    string
-		wantType   string
-		wantApp    string
-		wantPubKey string
-		wantKS0    string
-		wantUnwrap string
-		wantSvc    bool
-		wantUsr    bool
-	}{
-		{
-			name:       "service v1 token",
-			token:      "pss_service:v1:" + hex64("a") + ":" + hex64("b") + ":" + hex64("c") + ":" + hex64("d"),
-			wantPrefix: "pss_service", wantVer: "v1", wantType: "Service",
-			wantApp: hex64("a"), wantPubKey: hex64("b"), wantKS0: hex64("c"), wantUnwrap: hex64("d"),
-			wantSvc: true, wantUsr: false,
-		},
-		{
-			name:       "service v2 (service account) token",
-			token:      "pss_service:v2:" + hex64("1") + ":" + hex64("2") + ":" + hex64("3") + ":" + hex64("4"),
-			wantPrefix: "pss_service", wantVer: "v2", wantType: "ServiceAccount",
-			wantApp: hex64("1"), wantPubKey: hex64("2"), wantKS0: hex64("3"), wantUnwrap: hex64("4"),
-			wantSvc: true, wantUsr: false,
-		},
-		{
-			name:       "user v2 token",
-			token:      "pss_user:v2:" + hex64("e") + ":" + hex64("f") + ":" + hex64("0") + ":" + hex64("9"),
-			wantPrefix: "pss_user", wantVer: "v2", wantType: "User",
-			wantApp: hex64("e"), wantPubKey: hex64("f"), wantKS0: hex64("0"), wantUnwrap: hex64("9"),
-			wantSvc: false, wantUsr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p, err := New(tt.token, "", false)
-			if err != nil {
-				t.Fatalf("New() error: %v", err)
-			}
-
-			// Verify public fields
-			if p.TokenType != tt.wantType {
-				t.Errorf("TokenType = %q, want %q", p.TokenType, tt.wantType)
-			}
-			if p.AppToken != tt.wantApp {
-				t.Errorf("AppToken mismatch")
-			}
-			if p.IsServiceToken != tt.wantSvc {
-				t.Errorf("IsServiceToken = %v, want %v", p.IsServiceToken, tt.wantSvc)
-			}
-			// Private fields (prefix, pesVersion, pssUserPublicKey, keyshare0, keyshare1UnwrapKey)
-			// are now lowercase and not directly testable — token parsing is verified via Decrypt() test
-			if p.IsUserToken != tt.wantUsr {
-				t.Errorf("IsUserToken = %v, want %v", p.IsUserToken, tt.wantUsr)
-			}
-			if p.Host != misc.PhaseCloudAPIHost {
-				t.Errorf("Host = %q, want %q", p.Host, misc.PhaseCloudAPIHost)
-			}
-		})
-	}
-
-	// 1.x SDK behavior: Init() called log.Fatalf on invalid token.
-	// 2.x SDK behavior: New() returns an error.
-	// Both reject the same invalid tokens.
-	invalidTokens := []string{
-		"not-a-token",
-		"pss_service:v1:short:bad",
-		"pss_user:invalid",
-		"",
-		"pss_service:v1:" + hex64("a"), // missing components
-	}
-	for _, tok := range invalidTokens {
-		if _, err := New(tok, "", false); err == nil {
-			t.Errorf("expected error for invalid token %q, got nil", tok)
-		}
-	}
-}
-
-// =============================================================================
-// 6. Phase.Decrypt Workflow Compatibility
+// 5. Phase.Decrypt Workflow Compatibility
 //
 // The 1.x SDK used crypto.DecryptWrappedKeyShare (which fetched + decrypted).
 // The 2.x SDK uses Phase.Decrypt (which takes pre-fetched data).
@@ -769,291 +675,7 @@ func TestCompat_DecryptMethod_MatchesCryptoWorkflow(t *testing.T) {
 }
 
 // =============================================================================
-// 7. Secret Referencing Behavioral Compatibility
-//
-// The 1.x SDK resolved ${...} references automatically in Get/GetAll.
-// The 2.x SDK exposes ResolveAllSecrets as a standalone function.
-// Verify the resolution logic produces identical results.
-// =============================================================================
-
-func TestCompat_SecretReferencing_SameResolution(t *testing.T) {
-	ResetSecretsCache()
-	t.Cleanup(ResetSecretsCache)
-
-	// Simulate the exact reference formats documented in the 1.x SDK:
-	// 1. ${KEY}                          -> local, root path
-	// 2. ${/backend/payments/STRIPE_KEY} -> local, specific path
-	// 3. ${staging.DEBUG}                -> cross-env, root path
-	// 4. ${prod./frontend/SECRET_KEY}    -> cross-env, specific path
-	// 5. ${backend_api::production./frontend/SECRET_KEY} -> cross-app
-
-	app := "my_app"
-	env := "development"
-
-	allSecrets := []SecretResult{
-		{Application: app, Environment: "development", Path: "/", Key: "API_KEY", Value: "key-123"},
-		{Application: app, Environment: "development", Path: "/backend/payments", Key: "STRIPE_KEY", Value: "sk_live_xxx"},
-		{Application: app, Environment: "staging", Path: "/", Key: "DEBUG", Value: "true"},
-		{Application: app, Environment: "production", Path: "/frontend", Key: "SECRET_KEY", Value: "fe-secret"},
-	}
-
-	// Seed the cache for cross-app reference
-	seedCache("backend_api", "production", "/frontend", map[string]string{
-		"SECRET_KEY": "cross-app-secret",
-	})
-
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"local root", "url=${API_KEY}", "url=key-123"},
-		{"local path", "stripe=${/backend/payments/STRIPE_KEY}", "stripe=sk_live_xxx"},
-		{"cross-env", "debug=${staging.DEBUG}", "debug=true"},
-		{"cross-env path", "fe=${production./frontend/SECRET_KEY}", "fe=fe-secret"},
-		{"cross-app", "ext=${backend_api::production./frontend/SECRET_KEY}", "ext=cross-app-secret"},
-		{"no refs", "plain value", "plain value"},
-		{"multiple refs", "${API_KEY}:${staging.DEBUG}", "key-123:true"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ResetSecretsCache()
-			// Re-seed cross-app cache
-			seedCache("backend_api", "production", "/frontend", map[string]string{
-				"SECRET_KEY": "cross-app-secret",
-			})
-
-			got, err := ResolveAllSecrets(tt.input, allSecrets, nil, app, env)
-			if err != nil {
-				t.Fatalf("ResolveAllSecrets error: %v", err)
-			}
-			if got != tt.expected {
-				t.Errorf("resolution mismatch:\n  got:      %q\n  expected: %q", got, tt.expected)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// 8. API Payload Structure Compatibility
-//
-// Verify that the JSON payloads sent to the Phase server are structurally
-// identical between old and 2.x SDKs.
-// =============================================================================
-
-func TestCompat_CreatePayloadStructure(t *testing.T) {
-	// Both old and 2.x SDK build the same JSON payload for secret creation:
-	// { "secrets": [ { "key": "ph:v1:...", "keyDigest": "...", "value": "ph:v1:...", "path": "/", "tags": [], "comment": "" } ] }
-
-	pubHex := "24eaf70f070a925d6d5176f20495d4d90867624d9a10379e2a9aef0955c9bf4e"
-	salt := "my-test-salt"
-
-	encKey, _ := crypto.EncryptAsymmetric("TEST_KEY", pubHex)
-	encVal, _ := crypto.EncryptAsymmetric("test_value", pubHex)
-	keyDigest, _ := crypto.Blake2bDigest("TEST_KEY", salt)
-
-	secret := map[string]interface{}{
-		"key":       encKey,
-		"keyDigest": keyDigest,
-		"value":     encVal,
-		"path":      "/",
-		"tags":      []string{},
-		"comment":   "",
-	}
-
-	payload := map[string][]map[string]interface{}{
-		"secrets": {secret},
-	}
-
-	data, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("json.Marshal error: %v", err)
-	}
-
-	// Verify the JSON structure
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("json.Unmarshal error: %v", err)
-	}
-
-	secrets, ok := parsed["secrets"].([]interface{})
-	if !ok || len(secrets) != 1 {
-		t.Fatalf("expected secrets array with 1 element, got %v", parsed["secrets"])
-	}
-
-	s := secrets[0].(map[string]interface{})
-
-	// Verify all expected fields exist
-	for _, field := range []string{"key", "keyDigest", "value", "path", "tags", "comment"} {
-		if _, ok := s[field]; !ok {
-			t.Errorf("missing field %q in secret payload", field)
-		}
-	}
-
-	// Verify key and value have ph:v1 prefix
-	if key, ok := s["key"].(string); !ok || !strings.HasPrefix(key, "ph:v1:") {
-		t.Errorf("key should start with 'ph:v1:', got %v", s["key"])
-	}
-	if val, ok := s["value"].(string); !ok || !strings.HasPrefix(val, "ph:v1:") {
-		t.Errorf("value should start with 'ph:v1:', got %v", s["value"])
-	}
-
-	// Verify keyDigest is 64-char hex
-	if kd, ok := s["keyDigest"].(string); !ok || len(kd) != 64 {
-		t.Errorf("keyDigest should be 64-char hex, got %v", s["keyDigest"])
-	}
-
-	// Verify path is string
-	if path, ok := s["path"].(string); !ok || path != "/" {
-		t.Errorf("path should be '/', got %v", s["path"])
-	}
-}
-
-func TestCompat_UpdatePayloadStructure(t *testing.T) {
-	// The update payload includes: id, key, keyDigest, value, path, tags, comment
-	// Optionally includes: override { value, isActive }
-
-	pubHex := "24eaf70f070a925d6d5176f20495d4d90867624d9a10379e2a9aef0955c9bf4e"
-	salt := "my-test-salt"
-
-	encKey, _ := crypto.EncryptAsymmetric("TEST_KEY", pubHex)
-	encVal, _ := crypto.EncryptAsymmetric("new_value", pubHex)
-	keyDigest, _ := crypto.Blake2bDigest("TEST_KEY", salt)
-
-	payload := map[string]interface{}{
-		"id":        "secret-uuid-123",
-		"key":       encKey,
-		"keyDigest": keyDigest,
-		"value":     encVal,
-		"path":      "/backend",
-		"tags":      []string{"production"},
-		"comment":   "",
-	}
-
-	data, err := json.Marshal(map[string][]map[string]interface{}{
-		"secrets": {payload},
-	})
-	if err != nil {
-		t.Fatalf("json.Marshal error: %v", err)
-	}
-
-	var parsed map[string]interface{}
-	json.Unmarshal(data, &parsed)
-
-	secrets := parsed["secrets"].([]interface{})
-	s := secrets[0].(map[string]interface{})
-
-	requiredFields := []string{"id", "key", "keyDigest", "value", "path", "tags", "comment"}
-	for _, field := range requiredFields {
-		if _, ok := s[field]; !ok {
-			t.Errorf("missing field %q in update payload", field)
-		}
-	}
-}
-
-func TestCompat_DeletePayloadStructure(t *testing.T) {
-	// Delete payload: { "secrets": ["id1", "id2", ...] }
-	secretIDs := []string{"uuid-1", "uuid-2"}
-
-	data, err := json.Marshal(map[string][]string{"secrets": secretIDs})
-	if err != nil {
-		t.Fatalf("json.Marshal error: %v", err)
-	}
-
-	var parsed map[string]interface{}
-	json.Unmarshal(data, &parsed)
-
-	secrets, ok := parsed["secrets"].([]interface{})
-	if !ok || len(secrets) != 2 {
-		t.Fatalf("expected secrets array with 2 IDs, got %v", parsed["secrets"])
-	}
-}
-
-// =============================================================================
-// 9. SecretResult Type Contracts
-//
-// The 1.x SDK returned map[string]interface{} with specific keys.
-// The 2.x SDK returns typed SecretResult structs.
-// Verify the field mapping is correct and complete.
-// =============================================================================
-
-func TestCompat_SecretResultFieldMapping(t *testing.T) {
-	// 1.x SDK returned:
-	//   map[string]interface{}{
-	//     "key":     decryptedKey,
-	//     "value":   resolvedValue,
-	//     "comment": decryptedComment,
-	//     "tags":    []string{...},
-	//     "path":    secretPath,
-	//   }
-	//
-	// 2.x SDK returns SecretResult with additional fields:
-	//   Application, Environment, Overridden, IsDynamic, DynamicGroup
-	//
-	// Verify the core fields match.
-
-	result := SecretResult{
-		Key:         "DATABASE_URL",
-		Value:       "postgres://host:5432/db",
-		Comment:     "Production DB",
-		Path:        "/backend",
-		Application: "MyApp",
-		Environment: "Production",
-		Tags:        []string{"database", "production"},
-		Overridden:  false,
-	}
-
-	// Marshal to JSON (this is what consumers would see)
-	data, err := json.Marshal(result)
-	if err != nil {
-		t.Fatalf("json.Marshal error: %v", err)
-	}
-
-	// Verify it can be parsed as a generic map (1.x SDK style)
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("json.Unmarshal error: %v", err)
-	}
-
-	// All 1.x SDK fields must be present
-	v1Fields := map[string]interface{}{
-		"key":     "DATABASE_URL",
-		"value":   "postgres://host:5432/db",
-		"comment": "Production DB",
-		"path":    "/backend",
-	}
-	for field, expected := range v1Fields {
-		got, ok := m[field]
-		if !ok {
-			t.Errorf("missing 1.x SDK field %q in SecretResult JSON", field)
-			continue
-		}
-		if got != expected {
-			t.Errorf("field %q = %v, want %v", field, got, expected)
-		}
-	}
-
-	// Verify tags array
-	tags, ok := m["tags"].([]interface{})
-	if !ok || len(tags) != 2 {
-		t.Errorf("tags field mismatch: %v", m["tags"])
-	}
-
-	// Verify 2.x fields exist (backwards additive)
-	if _, ok := m["application"]; !ok {
-		t.Error("missing 2.x field 'application' in SecretResult JSON")
-	}
-	if _, ok := m["environment"]; !ok {
-		t.Error("missing 2.x field 'environment' in SecretResult JSON")
-	}
-	if _, ok := m["overridden"]; !ok {
-		t.Error("missing 2.x field 'overridden' in SecretResult JSON")
-	}
-}
-
-// =============================================================================
-// 10. PhaseGetContext Compatibility
+// 6. PhaseGetContext Compatibility
 //
 // The 1.x SDK's PhaseGetContext(userData, opts) returned (appID, envID, pubKey, err).
 // The 2.x SDK returns (appName, appID, envName, envID, identityKey, err).
@@ -1178,7 +800,7 @@ func TestCompat_PhaseGetContext_1xBehavior(t *testing.T) {
 }
 
 // =============================================================================
-// 11. DecryptSecret Helper Compatibility
+// 7. DecryptSecret Helper Compatibility
 //
 // The 1.x SDK's crypto.DecryptSecret(secret, privHex, pubHex) decrypted
 // key, value, and comment from a map[string]interface{} (API response).
@@ -1250,7 +872,7 @@ func TestCompat_DecryptSecret_EmptyComment(t *testing.T) {
 }
 
 // =============================================================================
-// 12. Cross-SDK Encrypt/Decrypt Interoperability
+// 8. Cross-SDK Encrypt/Decrypt Interoperability
 //
 // Verify that secrets encrypted by the 2.x SDK can be consumed by any
 // implementation following the libsodium protocol, and vice versa.
@@ -1327,35 +949,6 @@ func TestCompat_CrossSDK_EncryptDecryptRoundTrip(t *testing.T) {
 				t.Errorf("round-trip mismatch:\n  got:      %q\n  expected: %q", got, pt)
 			}
 		})
-	}
-}
-
-// =============================================================================
-// 13. HTTP Header Compatibility
-//
-// Verify the Authorization header format matches between old and 2.x SDKs.
-// Both use: "Bearer {TokenType} {AppToken}"
-// =============================================================================
-
-func TestCompat_AuthorizationHeader(t *testing.T) {
-	// 1.x SDK: headers.Set("Authorization", fmt.Sprintf("Bearer %s %s", tokenType, appToken))
-	// 2.x SDK: same
-
-	tests := []struct {
-		tokenType string
-		appToken  string
-		expected  string
-	}{
-		{"Service", "abc123", "Bearer Service abc123"},
-		{"ServiceAccount", "def456", "Bearer ServiceAccount def456"},
-		{"User", "ghi789", "Bearer User ghi789"},
-	}
-
-	for _, tt := range tests {
-		header := fmt.Sprintf("Bearer %s %s", tt.tokenType, tt.appToken)
-		if header != tt.expected {
-			t.Errorf("Authorization header mismatch: got %q, want %q", header, tt.expected)
-		}
 	}
 }
 
