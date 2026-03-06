@@ -1,11 +1,9 @@
 package misc
 
-import (
-	"regexp"
-)
+import "regexp"
 
 const (
-	Version           = "1.0.3"
+	Version           = "2.0.0"
 	PhVersion         = "v1"
 	PhaseCloudAPIHost = "https://console.phase.dev"
 )
@@ -16,16 +14,9 @@ var (
 )
 
 var (
-
 	// Compiled regex patterns
 	PssUserPattern    = regexp.MustCompile(`^pss_user:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$`)
 	PssServicePattern = regexp.MustCompile(`^pss_service:v(\d+):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64}):([a-fA-F0-9]{64})$`)
-
-	// CrossEnvPattern   = regexp.MustCompile(`\$\{(.+?)\.(.+?)\}`)
-	// LocalRefPattern   = regexp.MustCompile(`\$\{([^.]+?)\}`)
-
-	// Regex to identify secret references
-	SecretRefRegex = regexp.MustCompile(`\$\{([^}]+)\}`)
 )
 
 type Environment struct {
@@ -53,9 +44,18 @@ type App struct {
 	EnvironmentKeys []EnvironmentKey `json:"environment_keys"`
 }
 
+type Organisation struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type AppKeyResponse struct {
-	WrappedKeyShare string `json:"wrapped_key_share"`
-	Apps            []App  `json:"apps"`
+	UserID          string        `json:"user_id"`
+	AccountID       string        `json:"account_id"`
+	Organisation    *Organisation `json:"organisation"`
+	OfflineEnabled  bool          `json:"offline_enabled"`
+	WrappedKeyShare string        `json:"wrapped_key_share"`
+	Apps            []App         `json:"apps"`
 }
 
 type GetContextOptions struct {

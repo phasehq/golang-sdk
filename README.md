@@ -1,12 +1,16 @@
-# Phase Secrets Management SDK for Go
+# Phase Go SDK
 
-The Phase Secrets SDK provides a Go package for managing secrets in your application environments using the Phase service. This SDK allows you to create, retrieve, update, and delete secrets with end-to-end encryption using just a few lines of code.
+The Phase Go SDK provides end-to-end encrypted secret management for your applications. Pure Go — no CGO or system dependencies required.
 
 ## Features
 
 - End-to-end encrypted secret CRUD operations
-- Cross-environment and local environment secret referencing
-- Bulk secret operations
+- Cross-environment and cross-application secret referencing
+- Dynamic secrets with lease management
+- Personal secret overrides
+- Bulk operations (multi-key get, bulk create, bulk delete)
+- Tag and path-based filtering
+- Pure Go — no CGO, no libsodium
 
 ### Secret Referencing Syntax
 
@@ -20,168 +24,194 @@ The Phase Secrets SDK provides a Go package for managing secrets in your applica
 
 ## Installation
 
-This SDK uses the `sodium` package to perform cryptographic operations, on most system you will need to install the `libsodium` library as a system dependency. Here's how you can install `libsodium` or its development packages on different platforms, including macOS, Ubuntu, Debian, Arch Linux, Alpine Linux, and Windows.
-
-This SDK uses the `sodium` package for cryptographic operations. On most systems, you'll need to install the `libsodium` library as a system dependency.
-
-#### macOS
-```sh
-brew install libsodium
-```
-
-#### Fedora
-```sh
-sudo dnf install libsodium-devel
-```
-
-#### Ubuntu and Debian
-```sh
-sudo apt-get update && sudo apt-get install libsodium-dev
-```
-
-#### Arch Linux
-```sh
-sudo pacman -Syu libsodium
-```
-
-#### Alpine Linux
-```sh
-sudo apk add libsodium-dev
-```
-
-#### Windows
-For Windows, download pre-built binaries from the [libsodium GitHub releases page](https://github.com/jedisct1/libsodium/releases). Choose the appropriate version for your system architecture and follow the included instructions.
-
-On Windows, the process is a bit different due to the variety of development environments. However, you can download pre-built binaries from the official [libsodium GitHub releases page](https://github.com/jedisct1/libsodium/releases). Choose the appropriate version for your system architecture (e.g., Win32 or Win64), download it, and follow the instructions included to integrate `libsodium` with your development environment. For development with Visual Studio, you'll typically include the header files and link against the `libsodium.lib` or `libsodium.dll` file.
-
-If you're using a package manager like `vcpkg` or `chocolatey`, you can also find `libsodium` packages available for installation:
-
-- Using `vcpkg`:
-  ```sh
-  vcpkg install libsodium
-  ```
-- Using `chocolatey`:
-  ```sh
-  choco install libsodium
-  ```
-
-### Installing the SDK
-
-To start using the Phase SDK in your Go project, install it using `go get`:
-
 ```bash
-go get github.com/phasehq/golang-sdk/phase
+go get github.com/phasehq/golang-sdk/v2/phase
 ```
-
-Import the SDK in your Go files:
 
 ```go
-import "github.com/phasehq/golang-sdk/phase"
+import "github.com/phasehq/golang-sdk/v2/phase"
 ```
 
-## Configuration
-
-Initialize the SDK with your service token and host information:
+## Quick Start
 
 ```go
 package main
 
 import (
+    "fmt"
     "log"
-    "github.com/phasehq/golang-sdk/phase"
+
+    "github.com/phasehq/golang-sdk/v2/phase"
 )
 
 func main() {
-    serviceToken := "pss_service:v1:....."
-    host := "https://console.phase.dev" // Change this for a self-hosted instance of Phase
-    debug := false // For logging verbosity, disable in production
+    // Accepts service tokens (pss_service:v1/v2) and user tokens (pss_user:v1)
+    token := "pss_service:v1:....."
+    host := "https://console.phase.dev" // Change for self-hosted instances
+    debug := false
 
-    phaseClient := phase.Init(serviceToken, host, debug)
-    if phaseClient == nil {
-        log.Fatal("Failed to initialize Phase client")
+    p, err := phase.New(token, host, debug)
+    if err != nil {
+        log.Fatalf("Failed to initialize Phase client: %v", err)
+    }
+
+    // Get secrets
+    secrets, err := p.Get(phase.GetOptions{
+        EnvName: "Development",
+        AppName: "MyApp",
+    })
+    if err != nil {
+        log.Fatalf("Failed to get secrets: %v", err)
+    }
+
+    for _, s := range secrets {
+        fmt.Printf("%s=%s\n", s.Key, s.Value)
     }
 }
 ```
 
 ## Usage
 
-### Creating a Secret
-
-Define key-value pairs, specify the environment and application (using either name or ID), and optionally set paths for each key:
+### Creating Secrets
 
 ```go
-opts := phase.CreateSecretsOptions{
-    KeyValuePairs: []map[string]string{
-        {"API_KEY": "api_secret"},
+err := p.Create(phase.CreateOptions{
+    KeyValuePairs: []phase.KeyValuePair{
+        {Key: "API_KEY", Value: "my_api_secret"},
+        {Key: "DB_HOST", Value: "localhost:5432"},
     },
-    EnvName:    "Production",
-    AppName:    "MyApp", // Or use AppID: "app-id-here"
-    SecretPath: map[string]string{"API_KEY": "/api/keys"}, // Optional, default path: /
-}
-
-err := phaseClient.Create(opts)
-if err != nil {
-    log.Fatalf("Failed to create secret: %v", err)
-}
+    EnvName: "Production",
+    AppName: "MyApp",       // Or use AppID: "app-id-here"
+    Path:    "/api/config", // Optional, defaults to /
+})
 ```
 
-### Retrieving a Secret
-
-Provide the environment name, application (name or ID), key to find, and optionally a tag and path:
+### Getting Secrets
 
 ```go
-getOpts := phase.GetSecretOptions{
-    EnvName:   "Production",
-    AppName:   "MyApp", // Or use AppID: "app-id-here"
-    KeyToFind: "API_KEY",
-}
+// Get all secrets in an environment
+secrets, err := p.Get(phase.GetOptions{
+    EnvName: "Production",
+    AppName: "MyApp",
+})
 
-secret, err := phaseClient.Get(getOpts)
-if err != nil {
-    log.Fatalf("Failed to get secret: %v", err)
-} else {
-    log.Printf("Secret: %+v", secret)
+// Get specific keys
+secrets, err := p.Get(phase.GetOptions{
+    EnvName: "Production",
+    AppName: "MyApp",
+    Keys:    []string{"API_KEY", "DB_HOST"},
+})
+
+// Filter by tag and path
+secrets, err := p.Get(phase.GetOptions{
+    EnvName: "Production",
+    AppName: "MyApp",
+    Tag:     "backend",
+    Path:    "/api/config",
+})
+
+// Include dynamic secrets with leases
+secrets, err := p.Get(phase.GetOptions{
+    EnvName: "Production",
+    AppName: "MyApp",
+    Dynamic: true,
+    Lease:   true,
+})
+```
+
+Each secret is returned as a `SecretResult`:
+
+```go
+type SecretResult struct {
+    Key          string
+    Value        string
+    Comment      string
+    Path         string
+    Application  string
+    Environment  string
+    Tags         []string
+    Overridden   bool         // true if a personal override is active
+    IsDynamic    bool         // true for dynamic secrets
+    DynamicGroup string       // provider group label for dynamic secrets
 }
 ```
 
 ### Updating a Secret
 
-Provide the new value along with the environment name, application (name or ID), key, and optionally the path:
+```go
+result, err := p.Update(phase.UpdateOptions{
+    EnvName: "Production",
+    AppName: "MyApp",
+    Key:     "API_KEY",
+    Value:   "my_updated_api_secret",
+})
+```
+
+### Deleting Secrets
 
 ```go
-updateOpts := phase.SecretUpdateOptions{
-    EnvName:    "Production",
-    AppName:    "MyApp", // Or use AppID: "app-id-here"
-    Key:        "API_KEY",
-    Value:      "my_updated_api_secret",
-    SecretPath: "/api/keys", // Optional, default path: /
-}
+keysNotFound, err := p.Delete(phase.DeleteOptions{
+    EnvName:      "Production",
+    AppName:      "MyApp",
+    KeysToDelete: []string{"API_KEY", "OLD_SECRET"},
+    Path:         "/api/config", // Optional
+})
 
-err := phaseClient.Update(updateOpts)
-if err != nil {
-    log.Fatalf("Failed to update secret: %v", err)
+if len(keysNotFound) > 0 {
+    fmt.Printf("Keys not found: %v\n", keysNotFound)
 }
 ```
 
-### Deleting a Secret
+### Secret References
 
-Specify the environment name, application (name or ID), key to delete, and optionally the path:
+`Get()` automatically resolves `${REF}` syntax in secret values before returning results, including cross-environment and cross-application references:
 
 ```go
-deleteOpts := phase.DeleteSecretOptions{
-    EnvName:     "Production",
-    AppName:     "MyApp", // Or use AppID: "app-id-here"
-    KeyToDelete: "API_KEY",
-    SecretPath:  "/api/keys", // Optional, default path: /
-}
+// References are resolved automatically — no extra steps needed
+secrets, _ := p.Get(phase.GetOptions{
+    EnvName: "Production",
+    AppName: "MyApp",
+})
 
-err := phaseClient.Delete(deleteOpts)
-if err != nil {
-    log.Fatalf("Failed to delete secret: %v", err)
+for _, s := range secrets {
+    // s.Value already has all ${REF} references resolved
+    fmt.Printf("%s=%s\n", s.Key, s.Value)
 }
 ```
 
-For more information on advanced usage, including detailed API references and best practices, please refer to the [Phase Docs](https://docs.phase.dev/sdks/go).
+## Overrides
 
+Create or update a personal override for a secret:
+
+```go
+// Create a secret with an override value
+err := p.Create(phase.CreateOptions{
+    KeyValuePairs: []phase.KeyValuePair{
+        {Key: "API_URL", Value: "https://api.example.com"},
+    },
+    EnvName:       "Development",
+    AppName:       "MyApp",
+    OverrideValue: "http://localhost:3000", // Personal override
+})
+
+// Update override for existing secret
+_, err := p.Update(phase.UpdateOptions{
+    EnvName:  "Development",
+    AppName:  "MyApp",
+    Key:      "API_URL",
+    Value:    "http://localhost:4000",
+    Override: true,
+})
+
+// Toggle override on/off
+_, err := p.Update(phase.UpdateOptions{
+    EnvName:        "Development",
+    AppName:        "MyApp",
+    Key:            "API_URL",
+    ToggleOverride: true,
+})
+```
+
+For more information, see the [Phase Docs](https://docs.phase.dev/sdks/go).
 
 If you encounter any issues or have questions, please file an issue on the [GitHub repository](https://github.com/phasehq/golang-sdk) or contact our support team over [Slack](https://slack.phase.dev).
