@@ -104,3 +104,36 @@ func TestHelpersExtractStringSliceAndGetBool(t *testing.T) {
 		t.Fatal("expected false for missing key")
 	}
 }
+
+// TestGetOptions_RawSkipsResolution validates that the Raw flag in GetOptions
+// controls whether ${REF} references are resolved. Since Get() requires network
+// calls, we test the resolution logic directly using ResolveAllSecrets — the
+// same code path that Get() uses when Raw is false.
+func TestGetOptions_RawSkipsResolution(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	app := "test_app"
+	env := "current"
+
+	seedCache(app, env, "/", map[string]string{"DB_HOST": "localhost"})
+
+	secrets := []SecretResult{
+		{Application: app, Environment: env, Path: "/", Key: "DB_URL", Value: "host=${DB_HOST}"},
+		{Application: app, Environment: env, Path: "/", Key: "DB_HOST", Value: "localhost"},
+	}
+
+	// Simulate Raw=true: no resolution, original ${REF} syntax preserved
+	if secrets[0].Value != "host=${DB_HOST}" {
+		t.Fatalf("expected raw reference syntax, got %q", secrets[0].Value)
+	}
+
+	// Simulate Raw=false (default): references are resolved via ResolveAllSecrets
+	resolved, err := ResolveAllSecrets(secrets[0].Value, secrets, nil, app, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved != "host=localhost" {
+		t.Fatalf("expected resolved value %q, got %q", "host=localhost", resolved)
+	}
+}

@@ -117,6 +117,7 @@ secrets, err := p.Get(phase.GetOptions{
     Dynamic: true,
     Lease:   true,
 })
+
 ```
 
 Each secret is returned as a `SecretResult`:
@@ -175,6 +176,21 @@ secrets, _ := p.Get(phase.GetOptions{
 
 for _, s := range secrets {
     // s.Value already has all ${REF} references resolved
+    fmt.Printf("%s=%s\n", s.Key, s.Value)
+}
+```
+
+To get raw, unresolved values (e.g. for display or inspection), set `Raw: true`:
+
+```go
+secrets, _ := p.Get(phase.GetOptions{
+    EnvName: "Production",
+    AppName: "MyApp",
+    Raw:     true,
+})
+
+for _, s := range secrets {
+    // s.Value contains the original ${REF} syntax, not the resolved value
     fmt.Printf("%s=%s\n", s.Key, s.Value)
 }
 ```
