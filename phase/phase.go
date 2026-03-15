@@ -45,12 +45,35 @@ func (p *Phase) debugf(format string, args ...interface{}) {
 	}
 }
 
+// SecretType constants
+const (
+	SecretTypeSecret = "secret" // Default: standard encrypted secret
+	SecretTypeSealed = "sealed" // Write-only: value cannot be read back in the Console after creation
+	SecretTypeConfig = "config" // Non-sensitive configuration value
+)
+
+// ValidSecretTypes is the set of allowed secret type values.
+var ValidSecretTypes = map[string]bool{
+	SecretTypeSecret: true,
+	SecretTypeSealed: true,
+	SecretTypeConfig: true,
+}
+
+// ValidateSecretType returns an error if secretType is non-empty and not a recognized secret type.
+func ValidateSecretType(secretType string) error {
+	if secretType != "" && !ValidSecretTypes[secretType] {
+		return fmt.Errorf("unsupported secret type: %s. Supported types: %s, %s, %s", secretType, SecretTypeSecret, SecretTypeSealed, SecretTypeConfig)
+	}
+	return nil
+}
+
 // Decrypted secrets from API response
 type SecretResult struct {
 	Key          string   `json:"key"`
 	Value        string   `json:"value"`
 	Comment      string   `json:"comment"`
 	Path         string   `json:"path"`
+	Type         string   `json:"type"`
 	Application  string   `json:"application"`
 	Environment  string   `json:"environment"`
 	Tags         []string `json:"tags"`
@@ -63,6 +86,7 @@ type SecretResult struct {
 type KeyValuePair struct {
 	Key   string
 	Value string
+	Type  string
 }
 
 // GET SECRETS
@@ -87,6 +111,7 @@ type CreateOptions struct {
 	AppID         string
 	Path          string
 	OverrideValue string
+	Type          string
 }
 
 // UPDATE SECRETS
@@ -100,6 +125,7 @@ type UpdateOptions struct {
 	DestinationPath string
 	Override        bool
 	ToggleOverride  bool
+	Type            string
 }
 
 // DELETE SECRETS
@@ -355,6 +381,12 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 			secretTags = []string{}
 		}
 
+		// Extract secret type (defaults to "secret" for backwards compatibility)
+		sType, _ := secret["type"].(string)
+		if sType == "" || sType == "static" {
+			sType = "secret"
+		}
+
 		result := SecretResult{
 			Key:         decryptedKey,
 			Value:       decryptedValue,
@@ -362,6 +394,7 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 			Tags:        secretTags,
 			Comment:     decryptedComment,
 			Path:        secretPath,
+			Type:        sType,
 			Application: appName,
 			Environment: envName,
 		}
@@ -443,6 +476,15 @@ func (p *Phase) Create(opts CreateOptions) error {
 			"path":      path,
 			"tags":      []string{},
 			"comment":   "",
+		}
+
+		// Set secret type: per-pair type takes precedence, then option-level type
+		secretType := pair.Type
+		if secretType == "" {
+			secretType = opts.Type
+		}
+		if secretType != "" {
+			secret["type"] = secretType
 		}
 
 		if opts.OverrideValue != "" {
@@ -570,6 +612,11 @@ func (p *Phase) Update(opts UpdateOptions) error {
 		"tags":      matchingSecret["tags"],
 		"comment":   matchingSecret["comment"],
 		"path":      path,
+	}
+
+	// Set secret type if specified
+	if opts.Type != "" {
+		payload["type"] = opts.Type
 	}
 
 	// Handle override logic
