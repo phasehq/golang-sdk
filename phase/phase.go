@@ -569,15 +569,21 @@ func (p *Phase) Update(opts UpdateOptions) error {
 		return &ErrSecretNotFound{Key: opts.Key, Path: sourcePath}
 	}
 
-	// Encrypt key and value
+	// Encrypt key
 	encryptedKey, err := crypto.EncryptAsymmetric(opts.Key, publicKey)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt key: %w", err)
 	}
 
-	encryptedValue, err := crypto.EncryptAsymmetric(opts.Value, publicKey)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt value: %w", err)
+	// Encrypt value — if no new value provided, reuse existing encrypted value
+	var encryptedValue string
+	if opts.Value != "" {
+		encryptedValue, err = crypto.EncryptAsymmetric(opts.Value, publicKey)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt value: %w", err)
+		}
+	} else {
+		encryptedValue, _ = matchingSecret["value"].(string)
 	}
 
 	// Get key digest
