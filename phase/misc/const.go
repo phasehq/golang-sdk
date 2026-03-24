@@ -3,7 +3,7 @@ package misc
 import "regexp"
 
 const (
-	Version           = "2.1.0"
+	Version           = "2.1.1"
 	PhVersion         = "v1"
 	PhaseCloudAPIHost = "https://console.phase.dev"
 )
