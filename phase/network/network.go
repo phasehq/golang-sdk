@@ -196,6 +196,62 @@ func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {
 	return resp, nil
 }
 
+// FetchPhaseUserRaw returns the raw JSON bytes from the user/tokens endpoint.
+func FetchPhaseUserRaw(tokenType, appToken, host string) ([]byte, error) {
+	url := fmt.Sprintf("%s/service/secrets/tokens/", host)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	return makeRequest(req)
+}
+
+// FetchPhaseSecretsRaw returns the raw JSON bytes from the secrets endpoint.
+func FetchPhaseSecretsRaw(tokenType, appToken, environmentID, host, path, keyDigest string) ([]byte, error) {
+	url := fmt.Sprintf("%s/service/secrets/", host)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	req.Header.Set("Environment", environmentID)
+	if path != "" {
+		req.Header.Set("Path", path)
+	}
+	if keyDigest != "" {
+		req.Header.Set("KeyDigest", keyDigest)
+	}
+	return makeRequest(req)
+}
+
+// FetchPhaseSecretsWithDynamicRaw returns the raw JSON bytes from the secrets endpoint with dynamic secret support.
+func FetchPhaseSecretsWithDynamicRaw(tokenType, appToken, envID, host, path, keyDigest string, dynamic, lease bool, leaseTTL *int) ([]byte, error) {
+	reqURL := fmt.Sprintf("%s/service/secrets/", host)
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	req.Header.Set("Environment", envID)
+	if path != "" {
+		req.Header.Set("Path", path)
+	}
+	if keyDigest != "" {
+		req.Header.Set("KeyDigest", keyDigest)
+	}
+	if dynamic {
+		req.Header.Set("dynamic", "true")
+	}
+	if lease {
+		req.Header.Set("lease", "true")
+	}
+	if leaseTTL != nil {
+		req.Header.Set("lease-ttl", fmt.Sprintf("%d", *leaseTTL))
+	}
+	return makeRequest(req)
+}
+
 func FetchAppKey(tokenType, appToken, host string) (string, error) {
 	client := getHTTPClient()
 	url := fmt.Sprintf("%s/service/secrets/tokens/", host)
