@@ -2,7 +2,9 @@ package network
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/phasehq/golang-sdk/v2/phase/misc"
 )
 
@@ -537,6 +541,79 @@ func RevokeDynamicSecretLease(tokenType, appToken, host, appID, env, leaseID str
 		return nil, err
 	}
 	return json.RawMessage(body), nil
+}
+
+// ExternalIdentityAuthAzure acquires an Azure AD JWT using DefaultAzureCredential
+// and exchanges it for a Phase ServiceAccount token.
+//
+// DefaultAzureCredential tries (in order):
+//  1. Environment vars (AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET)
+//  2. Workload Identity (Kubernetes)
+//  3. Managed Identity (IMDS — Azure VMs, Functions, AKS)
+//  4. Azure CLI (az login)
+//  5. Azure Developer CLI (azd login)
+//
+// The resource parameter must match the "Resource / Audience" configured on the
+// Phase identity (default: "https://management.azure.com/").
+func ExternalIdentityAuthAzure(host, serviceAccountID string, ttl *int, resource string) (map[string]interface{}, error) {
+	if resource == "" {
+		resource = "https://management.azure.com/"
+	}
+
+	ctx := context.Background()
+
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Azure credential: %w", err)
+	}
+
+	// .default scope suffix required for v2.0 token endpoint
+	// Ensure resource ends with "/" before appending ".default"
+	scope := strings.TrimRight(resource, "/") + "/.default"
+	azToken, err := cred.GetToken(ctx, policy.TokenRequestOptions{
+		Scopes: []string{scope},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Azure AD token: %w", err)
+	}
+
+	encodedJWT := base64.StdEncoding.EncodeToString([]byte(azToken.Token))
+
+	reqURL := fmt.Sprintf("%s/service/public/identities/external/v1/azure/entra/auth/", host)
+
+	payload := map[string]interface{}{
+		"account": map[string]interface{}{
+			"type": "service",
+			"id":   serviceAccountID,
+		},
+		"azureEntra": map[string]interface{}{
+			"jwt": encodedJWT,
+		},
+	}
+	if ttl != nil {
+		payload["tokenRequest"] = map[string]interface{}{
+			"ttl": *ttl,
+		}
+	}
+
+	payloadBytes, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", reqURL, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	respBody, err := makeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode auth response: %w", err)
+	}
+	return result, nil
 }
 
 func ExternalIdentityAuthAWS(host, serviceAccountID string, ttl *int, encodedURL, encodedHeaders, encodedBody, method string) (map[string]interface{}, error) {
