@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/phasehq/golang-sdk/v2/phase/crypto"
@@ -25,6 +26,7 @@ type Phase struct {
 	TokenType          string
 	IsServiceToken     bool
 	IsUserToken        bool
+	offlineConfig      *OfflineConfig
 }
 
 // Return when a secret key does not exist at the specified path.
@@ -270,18 +272,41 @@ func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 }
 
 // fetchSecrets fetches and decrypts secrets without resolving references.
+// When OfflineConfig is set, encrypted API responses are cached to disk on success
+// and served from cache when the network is unavailable.
 func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
-	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	cfg := p.offlineConfig
+	offline := cfg != nil && cfg.Offline
 
+	// --- Step 1: Get user data (from network or cache) ---
 	var userData misc.AppKeyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
-		return nil, fmt.Errorf("failed to decode user data: %w", err)
+
+	if offline {
+		cached, err := cacheRead(userDataCachePath(cfg.CacheDir))
+		if err != nil {
+			return nil, fmt.Errorf("offline mode: no cached user data available: %w", err)
+		}
+		if err := json.Unmarshal(cached, &userData); err != nil {
+			return nil, fmt.Errorf("offline mode: failed to decode cached user data: %w", err)
+		}
+	} else {
+		resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if err := json.NewDecoder(resp.Body).Decode(&userData); err != nil {
+			return nil, fmt.Errorf("failed to decode user data: %w", err)
+		}
+		// Cache user data on success
+		if cfg != nil {
+			if data, err := json.Marshal(&userData); err == nil {
+				_ = cacheWrite(userDataCachePath(cfg.CacheDir), data)
+			}
+		}
 	}
 
+	// --- Step 2: Resolve app/env context ---
 	appName, _, envName, envID, publicKey, err := misc.PhaseGetContext(&userData, opts.AppName, opts.EnvName, opts.AppID)
 	if err != nil {
 		return nil, err
@@ -303,31 +328,57 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 		return nil, fmt.Errorf("failed to generate env key pair: %w", err)
 	}
 
-	// Compute key digest for single-key lookups
+	// Compute key digest for single-key lookups (only when online — cache stores full env)
 	var keyDigest string
-	if len(opts.Keys) == 1 {
+	if !offline && len(opts.Keys) == 1 {
 		decryptedSalt, saltErr := p.Decrypt(envKey.WrappedSalt, userData.WrappedKeyShare)
 		if saltErr == nil {
 			keyDigest, _ = crypto.Blake2bDigest(opts.Keys[0], decryptedSalt)
 		}
 	}
 
-	// Fetch secrets
+	// --- Step 3: Get encrypted secrets (from network or cache) ---
 	var secrets []map[string]interface{}
-	if opts.Dynamic {
-		secrets, err = network.FetchPhaseSecretsWithDynamic(p.TokenType, p.AppToken, envID, p.Host, opts.Path, keyDigest, true, opts.Lease, opts.LeaseTTL)
+
+	if offline {
+		cached, err := cacheRead(secretsCachePath(cfg.CacheDir, envName, appName, opts.AppID, opts.Path))
+		if err != nil {
+			return nil, fmt.Errorf("offline mode: no cached secrets for environment '%s': %w", envName, err)
+		}
+		if err := json.Unmarshal(cached, &secrets); err != nil {
+			return nil, fmt.Errorf("offline mode: failed to decode cached secrets: %w", err)
+		}
 	} else {
-		secrets, err = network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path, keyDigest)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch secrets: %w", err)
+		var fetchErr error
+		if opts.Dynamic {
+			secrets, fetchErr = network.FetchPhaseSecretsWithDynamic(p.TokenType, p.AppToken, envID, p.Host, opts.Path, keyDigest, true, opts.Lease, opts.LeaseTTL)
+		} else {
+			secrets, fetchErr = network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path, keyDigest)
+		}
+		if fetchErr != nil {
+			return nil, fmt.Errorf("failed to fetch secrets: %w", fetchErr)
+		} else if cfg != nil {
+			// Cache secrets on success
+			if data, err := json.Marshal(secrets); err == nil {
+				_ = cacheWrite(secretsCachePath(cfg.CacheDir, envName, appName, opts.AppID, opts.Path), data)
+			}
+		}
 	}
 
+	// --- Step 4: Decrypt secrets (shared path for online and offline) ---
 	var results []SecretResult
 	for _, secret := range secrets {
 		// Handle dynamic secrets
 		secretType, _ := secret["type"].(string)
 		if secretType == "dynamic" {
+			if offline {
+				name, _ := secret["name"].(string)
+				if name == "" {
+					name = "unknown"
+				}
+				fmt.Fprintf(os.Stderr, "⚠ Offline mode: dynamic secret '%s' requires network access, skipping\n", name)
+				continue
+			}
 			dynamicResults := processDynamicSecret(secret, envPrivKey, publicKey, appName, envName, opts)
 			results = append(results, dynamicResults...)
 			continue
@@ -421,6 +472,9 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 
 // CREATE SECRETS
 func (p *Phase) Create(opts CreateOptions) error {
+	if p.offlineConfig != nil && p.offlineConfig.Offline {
+		return fmt.Errorf("cannot create secrets in offline mode")
+	}
 	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
 	if err != nil {
 		return err
@@ -506,6 +560,9 @@ func (p *Phase) Create(opts CreateOptions) error {
 
 // UPDATE SECRETS
 func (p *Phase) Update(opts UpdateOptions) error {
+	if p.offlineConfig != nil && p.offlineConfig.Offline {
+		return fmt.Errorf("cannot update secrets in offline mode")
+	}
 	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
 	if err != nil {
 		return err
@@ -665,6 +722,9 @@ func (p *Phase) Update(opts UpdateOptions) error {
 
 // DELETE SECRETS
 func (p *Phase) Delete(opts DeleteOptions) ([]string, error) {
+	if p.offlineConfig != nil && p.offlineConfig.Offline {
+		return nil, fmt.Errorf("cannot delete secrets in offline mode")
+	}
 	resp, err := network.FetchPhaseUser(p.TokenType, p.AppToken, p.Host)
 	if err != nil {
 		return nil, err
