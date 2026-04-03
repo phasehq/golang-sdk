@@ -73,7 +73,9 @@ func cacheWrite(fp string, data []byte) error {
 	// not atomic, so retry a few times on failure.
 	var renameErr error
 	for attempts := 0; attempts < 5; attempts++ {
-		os.Remove(fp)
+		if runtime.GOOS == "windows" {
+			os.Remove(fp)
+		}
 		renameErr = os.Rename(tmpName, fp)
 		if renameErr == nil {
 			return nil
