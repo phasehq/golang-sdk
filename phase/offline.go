@@ -3,12 +3,9 @@ package phase
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/phasehq/golang-sdk/v2/phase/network"
 )
 
 // OfflineConfig controls offline caching behavior.
@@ -46,15 +43,28 @@ func secretsCachePath(cacheDir, envName, appName, appID, path string) string {
 
 // cacheWrite atomically writes data to a file with 0600 permissions.
 func cacheWrite(fp string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(fp), 0700); err != nil {
+	dir := filepath.Dir(fp)
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	tmp := fp + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	tmp, err := os.CreateTemp(dir, ".phase-cache-*.tmp")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, fp); err != nil {
-		os.Remove(tmp)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	// On Windows, os.Rename fails if the target exists; remove it first.
+	os.Remove(fp)
+	if err := os.Rename(tmpName, fp); err != nil {
+		os.Remove(tmpName)
 		return err
 	}
 	return nil
@@ -65,10 +75,3 @@ func cacheRead(fp string) ([]byte, error) {
 	return os.ReadFile(fp)
 }
 
-// isNetworkError returns true if the error indicates the server is unreachable
-// (DNS, connection, timeout, SSL) — not auth or API errors.
-func isNetworkError(err error) bool {
-	var netErr *network.NetworkError
-	var sslErr *network.SSLError
-	return errors.As(err, &netErr) || errors.As(err, &sslErr)
-}
