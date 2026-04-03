@@ -378,7 +378,7 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 				if name == "" {
 					name = "unknown"
 				}
-				fmt.Fprintf(os.Stderr, "⚠ Offline mode: dynamic secret '%s' requires network access, skipping\n", name)
+				fmt.Fprintf(os.Stderr, "⚠️ Offline mode: dynamic secret '%s' requires network access, skipping\n", name)
 				continue
 			}
 			dynamicResults := processDynamicSecret(secret, envPrivKey, publicKey, appName, envName, opts)
