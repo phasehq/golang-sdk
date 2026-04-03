@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
 )
 
 // OfflineConfig controls offline caching behavior.
@@ -61,13 +63,23 @@ func cacheWrite(fp string, data []byte) error {
 		os.Remove(tmpName)
 		return err
 	}
-	// On Windows, os.Rename fails if the target exists; remove it first.
-	os.Remove(fp)
-	if err := os.Rename(tmpName, fp); err != nil {
-		os.Remove(tmpName)
-		return err
+	// On Windows, rename fails if the target exists or is momentarily locked by
+	// another process (e.g. antivirus, concurrent writer). Remove-then-rename is
+	// not atomic, so retry a few times on failure.
+	var renameErr error
+	for attempts := 0; attempts < 5; attempts++ {
+		os.Remove(fp)
+		renameErr = os.Rename(tmpName, fp)
+		if renameErr == nil {
+			return nil
+		}
+		if runtime.GOOS != "windows" {
+			break
+		}
+		time.Sleep(time.Duration(attempts+1) * 10 * time.Millisecond)
 	}
-	return nil
+	os.Remove(tmpName)
+	return renameErr
 }
 
 // cacheRead reads a cached file.
