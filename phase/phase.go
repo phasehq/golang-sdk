@@ -358,8 +358,9 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 		if fetchErr != nil {
 			return nil, fmt.Errorf("failed to fetch secrets: %w", fetchErr)
 		}
-		if cfg != nil {
-			// Cache secrets on success
+		// Only cache full-env fetches — single-key fetches (keyDigest != "") return
+		// a subset and would overwrite the complete cache file.
+		if cfg != nil && keyDigest == "" {
 			if data, err := json.Marshal(secrets); err == nil {
 				_ = cacheWrite(secretsCachePath(cfg.CacheDir, envName, appName, opts.AppID, opts.Path), data)
 			}
