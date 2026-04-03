@@ -357,7 +357,8 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 		}
 		if fetchErr != nil {
 			return nil, fmt.Errorf("failed to fetch secrets: %w", fetchErr)
-		} else if cfg != nil {
+		}
+		if cfg != nil {
 			// Cache secrets on success
 			if data, err := json.Marshal(secrets); err == nil {
 				_ = cacheWrite(secretsCachePath(cfg.CacheDir, envName, appName, opts.AppID, opts.Path), data)

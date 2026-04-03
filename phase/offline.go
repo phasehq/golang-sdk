@@ -54,6 +54,11 @@ func cacheWrite(fp string, data []byte) error {
 		return err
 	}
 	tmpName := tmp.Name()
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)

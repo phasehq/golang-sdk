@@ -1,6 +1,7 @@
 package phase
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -73,7 +74,7 @@ func TestCacheWriteConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			data := []byte(`{"idx":` + string(rune('0'+idx%10)) + `}`)
+			data := []byte(fmt.Sprintf(`{"idx":%d}`, idx))
 			errs[idx] = cacheWrite(fp, data)
 		}(i)
 	}
