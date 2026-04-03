@@ -24,10 +24,8 @@ func (p *Phase) SetOfflineConfig(cfg *OfflineConfig) {
 }
 
 // pathHash returns a filesystem-safe SHA-256 hex digest for a cache key.
+// NOTE: Don't normalize paths eg. "" = "/" as passing a blank path will return all secrets inside an environment across all paths.
 func pathHash(envName, appName, appID, path string) string {
-	if path == "" {
-		path = "/"
-	}
 	raw := fmt.Sprintf("%s|%s|%s|%s", envName, appName, appID, path)
 	h := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(h[:])
@@ -93,4 +91,3 @@ func cacheWrite(fp string, data []byte) error {
 func cacheRead(fp string) ([]byte, error) {
 	return os.ReadFile(fp)
 }
-

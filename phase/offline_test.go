@@ -107,13 +107,16 @@ func TestCacheReadMissingFile(t *testing.T) {
 func TestPathHash(t *testing.T) {
 	h1 := pathHash("dev", "myapp", "id1", "/")
 	h2 := pathHash("dev", "myapp", "id1", "")
-	if h1 != h2 {
-		t.Error("empty path and '/' should produce the same hash")
+	if h1 == h2 {
+		t.Error("empty path (all paths) and '/' (root only) must produce different hashes")
 	}
 
 	h3 := pathHash("dev", "myapp", "id1", "/backend")
 	if h1 == h3 {
 		t.Error("different paths should produce different hashes")
+	}
+	if h2 == h3 {
+		t.Error("empty path and '/backend' should produce different hashes")
 	}
 
 	h4 := pathHash("staging", "myapp", "id1", "/")
