@@ -54,6 +54,12 @@ const (
 	SecretTypeConfig = "config" // Non-sensitive configuration value
 )
 
+// SecretLifecycle constants
+const (
+	SecretLifecycleStatic   = "static"   // Default: value is managed by the user
+	SecretLifecycleRotating = "rotating" // Value is automatically rotated on a schedule
+)
+
 // ValidSecretTypes is the set of allowed secret type values.
 var ValidSecretTypes = map[string]bool{
 	SecretTypeSecret: true,
@@ -76,6 +82,7 @@ type SecretResult struct {
 	Comment      string   `json:"comment"`
 	Path         string   `json:"path"`
 	Type         string   `json:"type"`
+	Lifecycle    string   `json:"lifecycle"`
 	Application  string   `json:"application"`
 	Environment  string   `json:"environment"`
 	Tags         []string `json:"tags"`
@@ -440,6 +447,12 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 			sType = "secret"
 		}
 
+		// Extract lifecycle (defaults to "static" for backwards compatibility)
+		lifecycle, _ := secret["lifecycle"].(string)
+		if lifecycle == "" {
+			lifecycle = SecretLifecycleStatic
+		}
+
 		result := SecretResult{
 			Key:         decryptedKey,
 			Value:       decryptedValue,
@@ -448,6 +461,7 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 			Comment:     decryptedComment,
 			Path:        secretPath,
 			Type:        sType,
+			Lifecycle:   lifecycle,
 			Application: appName,
 			Environment: envName,
 		}
