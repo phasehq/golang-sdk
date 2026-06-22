@@ -225,6 +225,34 @@ func TestResolveAllSecrets_CrossAppInvalidRefReturnsError(t *testing.T) {
 	}
 }
 
+func TestResolveAllSecrets_CrossAppNestedRefUsesReferencedAppSecrets(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	// Seed the cache as if app "db" env "prod" path "/" had been fetched: its
+	// CONN nests a bare local ref ${HOST}, and db's own HOST is "db-host".
+	secretsCacheMu.Lock()
+	secretsCache["db|prod|/"] = map[string]string{
+		"CONN": "x@${HOST}",
+		"HOST": "db-host",
+	}
+	secretsCacheMu.Unlock()
+
+	// The originating app "web" has its OWN prod/HOST = "web-host" in memory.
+	webSecrets := []SecretResult{
+		{Application: "web", Environment: "prod", Path: "/", Key: "HOST", Value: "web-host"},
+	}
+
+	got, err := ResolveAllSecrets("${db::prod.CONN}", webSecrets, nil, "web", "prod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The nested ${HOST} inside db's CONN must resolve to db's HOST, not web's.
+	if got != "x@db-host" {
+		t.Fatalf("got %q, want %q — originating app's HOST leaked into cross-app resolution", got, "x@db-host")
+	}
+}
+
 func TestResolveAllSecretsWithOptionsPreservesFetchFailureByDefault(t *testing.T) {
 	ResetSecretsCache()
 	t.Cleanup(ResetSecretsCache)

@@ -223,7 +223,14 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 				childVisited[k] = v
 			}
 			childVisited[canonical] = true
-			resolvedVal, err = resolveAllSecretsInternal(resolvedVal, allSecrets, p, app, env, childVisited, failOnFetchError)
+			// allSecrets holds only the originating app's in-memory secrets. Once we
+			// cross into a different app, drop it so that app's references resolve from
+			// the cache instead of being shadowed by the originating app's values.
+			childSecrets := allSecrets
+			if app != currentApp {
+				childSecrets = nil
+			}
+			resolvedVal, err = resolveAllSecretsInternal(resolvedVal, childSecrets, p, app, env, childVisited, failOnFetchError)
 			if err != nil {
 				return "", err
 			}
