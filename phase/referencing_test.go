@@ -224,3 +224,95 @@ func TestResolveAllSecrets_CrossAppInvalidRefReturnsError(t *testing.T) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
+
+func TestResolveAllSecrets_CrossAppNestedRefUsesReferencedAppSecrets(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	// Seed the cache as if app "db" env "prod" path "/" had been fetched: its
+	// CONN nests a bare local ref ${HOST}, and db's own HOST is "db-host".
+	secretsCacheMu.Lock()
+	secretsCache["db|prod|/"] = map[string]string{
+		"CONN": "x@${HOST}",
+		"HOST": "db-host",
+	}
+	secretsCacheMu.Unlock()
+
+	// The originating app "web" has its OWN prod/HOST = "web-host" in memory.
+	webSecrets := []SecretResult{
+		{Application: "web", Environment: "prod", Path: "/", Key: "HOST", Value: "web-host"},
+	}
+
+	got, err := ResolveAllSecrets("${db::prod.CONN}", webSecrets, nil, "web", "prod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The nested ${HOST} inside db's CONN must resolve to db's HOST, not web's.
+	if got != "x@db-host" {
+		t.Fatalf("got %q, want %q — originating app's HOST leaked into cross-app resolution", got, "x@db-host")
+	}
+}
+
+func TestResolveAllSecretsWithOptionsPreservesFetchFailureByDefault(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	phase := &Phase{Host: "http://127.0.0.1:1", TokenType: "ServiceAccount", AppToken: "token"}
+	got, err := resolveAllSecretsWithOptions("value=${staging.KEY}", nil, phase, "app", "development", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "value=${staging.KEY}" {
+		t.Fatalf("got %q, want unresolved reference preserved", got)
+	}
+}
+
+func TestResolveAllSecretsWithOptionsFailsOnReferenceFetchError(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	phase := &Phase{Host: "http://127.0.0.1:1", TokenType: "ServiceAccount", AppToken: "token"}
+	_, err := resolveAllSecretsWithOptions("value=${staging.KEY}", nil, phase, "app", "development", true)
+	if err == nil {
+		t.Fatal("expected reference fetch error")
+	}
+	if !strings.Contains(err.Error(), "failed to fetch referenced secrets") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveAllSecretsWithOptionsFailsOnMissingReferencedKey(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	// staging fetched successfully (bucket present) but has no KEY.
+	secretsCacheMu.Lock()
+	secretsCache["app|staging|/"] = map[string]string{"OTHER": "v"}
+	secretsCacheMu.Unlock()
+
+	_, err := resolveAllSecretsWithOptions("value=${staging.KEY}", nil, nil, "app", "development", true)
+	if err == nil {
+		t.Fatal("expected error for unresolved reference in fail mode")
+	}
+	if !strings.Contains(err.Error(), "could not be resolved") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveAllSecretsWithOptionsPreservesMissingReferencedKeyByDefault(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	// staging fetched successfully (bucket present) but has no KEY.
+	secretsCacheMu.Lock()
+	secretsCache["app|staging|/"] = map[string]string{"OTHER": "v"}
+	secretsCacheMu.Unlock()
+
+	got, err := resolveAllSecretsWithOptions("value=${staging.KEY}", nil, nil, "app", "development", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "value=${staging.KEY}" {
+		t.Fatalf("got %q, want unresolved reference preserved", got)
+	}
+}

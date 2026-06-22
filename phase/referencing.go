@@ -41,18 +41,18 @@ func normalizePath(path string) string {
 	return path
 }
 
-func ensureCached(p *Phase, appName, envName, path string) {
+func ensureCached(p *Phase, appName, envName, path string) error {
 	ck := cacheKey(appName, envName, path)
 
 	secretsCacheMu.RLock()
 	_, ok := secretsCache[ck]
 	secretsCacheMu.RUnlock()
 	if ok {
-		return
+		return nil
 	}
 
 	if p == nil {
-		return
+		return nil
 	}
 	fetched, err := p.fetchSecrets(GetOptions{
 		EnvName: envName,
@@ -60,7 +60,7 @@ func ensureCached(p *Phase, appName, envName, path string) {
 		Path:    normalizePath(path),
 	})
 	if err != nil {
-		return
+		return err
 	}
 	bucket := map[string]string{}
 	for _, s := range fetched {
@@ -70,6 +70,7 @@ func ensureCached(p *Phase, appName, envName, path string) {
 	secretsCacheMu.Lock()
 	secretsCache[ck] = bucket
 	secretsCacheMu.Unlock()
+	return nil
 }
 
 func getFromCache(appName, envName, path, keyName string) (string, bool) {
@@ -127,10 +128,14 @@ func parseReferenceContext(ref, currentApp, currentEnv string) (appName, envName
 
 // ResolveAllSecrets resolves all ${...} references in a value string.
 func ResolveAllSecrets(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string) (string, error) {
-	return resolveAllSecretsInternal(value, allSecrets, p, currentApp, currentEnv, nil)
+	return resolveAllSecretsInternal(value, allSecrets, p, currentApp, currentEnv, nil, false)
 }
 
-func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string, visited map[string]bool) (string, error) {
+func resolveAllSecretsWithOptions(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string, failOnResolutionError bool) (string, error) {
+	return resolveAllSecretsInternal(value, allSecrets, p, currentApp, currentEnv, nil, failOnResolutionError)
+}
+
+func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string, visited map[string]bool, failOnResolutionError bool) (string, error) {
 	if visited == nil {
 		visited = map[string]bool{}
 	}
@@ -165,7 +170,9 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 		combo := fmt.Sprintf("%s|%s|%s", app, env, path)
 		if !seen[combo] {
 			seen[combo] = true
-			ensureCached(p, app, env, path)
+			if err := ensureCached(p, app, env, path); err != nil && failOnResolutionError {
+				return "", fmt.Errorf("failed to fetch referenced secrets for app %q env %q path %q: %w", app, env, path, err)
+			}
 		}
 	}
 
@@ -203,6 +210,9 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 		}
 
 		if !found {
+			if failOnResolutionError {
+				return "", fmt.Errorf("reference ${%s} could not be resolved: key %q not found in app %q env %q path %q", ref, keyName, app, env, path)
+			}
 			// Keep original reference text
 			resolutions = append(resolutions, resolvedRef{fullRef: value[locs[i][0]:locs[i][1]], resolvedVal: value[locs[i][0]:locs[i][1]]})
 			continue
@@ -216,7 +226,14 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 				childVisited[k] = v
 			}
 			childVisited[canonical] = true
-			resolvedVal, err = resolveAllSecretsInternal(resolvedVal, allSecrets, p, app, env, childVisited)
+			// allSecrets holds only the originating app's in-memory secrets. Once we
+			// cross into a different app, drop it so that app's references resolve from
+			// the cache instead of being shadowed by the originating app's values.
+			childSecrets := allSecrets
+			if app != currentApp {
+				childSecrets = nil
+			}
+			resolvedVal, err = resolveAllSecretsInternal(resolvedVal, childSecrets, p, app, env, childVisited, failOnResolutionError)
 			if err != nil {
 				return "", err
 			}
