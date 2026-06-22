@@ -280,3 +280,39 @@ func TestResolveAllSecretsWithOptionsFailsOnReferenceFetchError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestResolveAllSecretsWithOptionsFailsOnMissingReferencedKey(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	// staging fetched successfully (bucket present) but has no KEY.
+	secretsCacheMu.Lock()
+	secretsCache["app|staging|/"] = map[string]string{"OTHER": "v"}
+	secretsCacheMu.Unlock()
+
+	_, err := resolveAllSecretsWithOptions("value=${staging.KEY}", nil, nil, "app", "development", true)
+	if err == nil {
+		t.Fatal("expected error for unresolved reference in fail mode")
+	}
+	if !strings.Contains(err.Error(), "could not be resolved") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveAllSecretsWithOptionsPreservesMissingReferencedKeyByDefault(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	// staging fetched successfully (bucket present) but has no KEY.
+	secretsCacheMu.Lock()
+	secretsCache["app|staging|/"] = map[string]string{"OTHER": "v"}
+	secretsCacheMu.Unlock()
+
+	got, err := resolveAllSecretsWithOptions("value=${staging.KEY}", nil, nil, "app", "development", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "value=${staging.KEY}" {
+		t.Fatalf("got %q, want unresolved reference preserved", got)
+	}
+}

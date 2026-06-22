@@ -110,7 +110,7 @@ type GetOptions struct {
 	Lease                          bool
 	LeaseTTL                       *int
 	Raw                            bool // When true, return raw secret values without resolving references
-	FailOnReferenceResolutionError bool // When true, API errors while resolving references are returned instead of preserving raw refs.
+	FailOnReferenceResolutionError bool // When true, any failure to resolve a reference (fetch error or unresolved/missing reference) returns an error instead of preserving the raw ref. Default false preserves unresolved refs as-is.
 }
 
 // CREATE SECRETS

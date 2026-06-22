@@ -131,11 +131,11 @@ func ResolveAllSecrets(value string, allSecrets []SecretResult, p *Phase, curren
 	return resolveAllSecretsInternal(value, allSecrets, p, currentApp, currentEnv, nil, false)
 }
 
-func resolveAllSecretsWithOptions(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string, failOnFetchError bool) (string, error) {
-	return resolveAllSecretsInternal(value, allSecrets, p, currentApp, currentEnv, nil, failOnFetchError)
+func resolveAllSecretsWithOptions(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string, failOnResolutionError bool) (string, error) {
+	return resolveAllSecretsInternal(value, allSecrets, p, currentApp, currentEnv, nil, failOnResolutionError)
 }
 
-func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string, visited map[string]bool, failOnFetchError bool) (string, error) {
+func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase, currentApp, currentEnv string, visited map[string]bool, failOnResolutionError bool) (string, error) {
 	if visited == nil {
 		visited = map[string]bool{}
 	}
@@ -170,7 +170,7 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 		combo := fmt.Sprintf("%s|%s|%s", app, env, path)
 		if !seen[combo] {
 			seen[combo] = true
-			if err := ensureCached(p, app, env, path); err != nil && failOnFetchError {
+			if err := ensureCached(p, app, env, path); err != nil && failOnResolutionError {
 				return "", fmt.Errorf("failed to fetch referenced secrets for app %q env %q path %q: %w", app, env, path, err)
 			}
 		}
@@ -210,6 +210,9 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 		}
 
 		if !found {
+			if failOnResolutionError {
+				return "", fmt.Errorf("reference ${%s} could not be resolved: key %q not found in app %q env %q path %q", ref, keyName, app, env, path)
+			}
 			// Keep original reference text
 			resolutions = append(resolutions, resolvedRef{fullRef: value[locs[i][0]:locs[i][1]], resolvedVal: value[locs[i][0]:locs[i][1]]})
 			continue
@@ -230,7 +233,7 @@ func resolveAllSecretsInternal(value string, allSecrets []SecretResult, p *Phase
 			if app != currentApp {
 				childSecrets = nil
 			}
-			resolvedVal, err = resolveAllSecretsInternal(resolvedVal, childSecrets, p, app, env, childVisited, failOnFetchError)
+			resolvedVal, err = resolveAllSecretsInternal(resolvedVal, childSecrets, p, app, env, childVisited, failOnResolutionError)
 			if err != nil {
 				return "", err
 			}
