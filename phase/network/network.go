@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/user"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -128,22 +129,41 @@ func makeRequest(req *http.Request) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, formatHTTPError(resp.StatusCode, body)
+		return nil, formatHTTPError(resp.StatusCode, body, resp.Header)
 	}
 
 	return body, nil
 }
 
 // formatHTTPError creates a typed SDK error from an HTTP error response.
-func formatHTTPError(statusCode int, body []byte) error {
+func formatHTTPError(statusCode int, body []byte, headers http.Header) error {
 	switch statusCode {
 	case http.StatusForbidden:
 		return &AuthorizationError{Detail: extractErrorDetail(body)}
 	case http.StatusTooManyRequests:
-		return &RateLimitError{}
+		return &RateLimitError{RetryAfter: parseRetryAfter(headers)}
 	default:
-		return &APIError{StatusCode: statusCode, Detail: extractErrorDetail(body)}
+		return &APIError{StatusCode: statusCode, Detail: extractErrorDetail(body), RetryAfter: parseRetryAfter(headers)}
 	}
+}
+
+func parseRetryAfter(headers http.Header) time.Duration {
+	if headers == nil {
+		return 0
+	}
+	value := strings.TrimSpace(headers.Get("Retry-After"))
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if retryAt, err := http.ParseTime(value); err == nil {
+		if wait := time.Until(retryAt); wait > 0 {
+			return wait
+		}
+	}
+	return 0
 }
 
 // extractErrorDetail tries to extract an error message from a JSON response body.
@@ -175,7 +195,7 @@ func handleHTTPResponse(resp *http.Response) error {
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	return formatHTTPError(resp.StatusCode, body)
+	return formatHTTPError(resp.StatusCode, body, resp.Header)
 }
 
 func FetchPhaseUser(tokenType, appToken, host string) (*http.Response, error) {

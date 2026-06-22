@@ -1,6 +1,9 @@
 package network
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // NetworkError represents transport-level errors: DNS, connection refused, timeout.
 type NetworkError struct {
@@ -44,7 +47,9 @@ func (e *AuthorizationError) Error() string {
 }
 
 // RateLimitError represents HTTP 429 Too Many Requests.
-type RateLimitError struct{}
+type RateLimitError struct {
+	RetryAfter time.Duration
+}
 
 func (e *RateLimitError) Error() string {
 	return "rate limited"
@@ -54,6 +59,7 @@ func (e *RateLimitError) Error() string {
 type APIError struct {
 	StatusCode int
 	Detail     string
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
