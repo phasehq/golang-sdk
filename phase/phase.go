@@ -100,16 +100,17 @@ type KeyValuePair struct {
 
 // GET SECRETS
 type GetOptions struct {
-	EnvName  string
-	AppName  string
-	AppID    string
-	Keys     []string
-	Tag      string
-	Path     string
-	Dynamic  bool
-	Lease    bool
-	LeaseTTL *int
-	Raw      bool // When true, return raw secret values without resolving references
+	EnvName                        string
+	AppName                        string
+	AppID                          string
+	Keys                           []string
+	Tag                            string
+	Path                           string
+	Dynamic                        bool
+	Lease                          bool
+	LeaseTTL                       *int
+	Raw                            bool // When true, return raw secret values without resolving references
+	FailOnReferenceResolutionError bool // When true, API errors while resolving references are returned instead of preserving raw refs.
 }
 
 // CREATE SECRETS
@@ -266,8 +267,11 @@ func (p *Phase) Get(opts GetOptions) ([]SecretResult, error) {
 			if secret.Value == "" {
 				continue
 			}
-			resolvedValue, err := ResolveAllSecrets(secret.Value, results, p, secret.Application, secret.Environment)
+			resolvedValue, err := resolveAllSecretsWithOptions(secret.Value, results, p, secret.Application, secret.Environment, opts.FailOnReferenceResolutionError)
 			if err != nil {
+				if opts.FailOnReferenceResolutionError {
+					return nil, fmt.Errorf("failed to resolve references in key %s: %w", secret.Key, err)
+				}
 				p.debugf("failed to resolve references in key %s: %v", secret.Key, err)
 				continue // Keep original unresolved value
 			}

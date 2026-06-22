@@ -224,3 +224,31 @@ func TestResolveAllSecrets_CrossAppInvalidRefReturnsError(t *testing.T) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
+
+func TestResolveAllSecretsWithOptionsPreservesFetchFailureByDefault(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	phase := &Phase{Host: "http://127.0.0.1:1", TokenType: "ServiceAccount", AppToken: "token"}
+	got, err := resolveAllSecretsWithOptions("value=${staging.KEY}", nil, phase, "app", "development", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "value=${staging.KEY}" {
+		t.Fatalf("got %q, want unresolved reference preserved", got)
+	}
+}
+
+func TestResolveAllSecretsWithOptionsFailsOnReferenceFetchError(t *testing.T) {
+	ResetSecretsCache()
+	t.Cleanup(ResetSecretsCache)
+
+	phase := &Phase{Host: "http://127.0.0.1:1", TokenType: "ServiceAccount", AppToken: "token"}
+	_, err := resolveAllSecretsWithOptions("value=${staging.KEY}", nil, phase, "app", "development", true)
+	if err == nil {
+		t.Fatal("expected reference fetch error")
+	}
+	if !strings.Contains(err.Error(), "failed to fetch referenced secrets") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
