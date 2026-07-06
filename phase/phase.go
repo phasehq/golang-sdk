@@ -89,6 +89,11 @@ type SecretResult struct {
 	Overridden   bool     `json:"overridden"`
 	IsDynamic    bool     `json:"is_dynamic,omitempty"`
 	DynamicGroup string   `json:"dynamic_group,omitempty"`
+	// Lease metadata (dynamic secrets only). Populated when a lease was
+	// generated (opts.Lease); lets callers report/track when creds expire.
+	LeaseID        string `json:"lease_id,omitempty"`
+	LeaseExpiresAt string `json:"lease_expires_at,omitempty"` // RFC3339 timestamp from the API
+	LeaseTTL       int    `json:"lease_ttl,omitempty"`        // seconds
 }
 
 // KeyValuePair represents a key-value pair for secret creation
@@ -847,7 +852,14 @@ func processDynamicSecret(secret map[string]interface{}, envPrivKey, publicKey, 
 	}
 
 	credMap := map[string]string{}
+	var leaseID, leaseExpiresAt string
+	var leaseTTL int
 	if leaseData, ok := secret["lease"].(map[string]interface{}); ok && leaseData != nil {
+		leaseID, _ = leaseData["id"].(string)
+		leaseExpiresAt, _ = leaseData["expires_at"].(string)
+		if ttl, ok := leaseData["ttl"].(float64); ok {
+			leaseTTL = int(ttl)
+		}
 		if creds, ok := leaseData["credentials"].([]interface{}); ok {
 			for _, c := range creds {
 				credEntry, ok := c.(map[string]interface{})
@@ -897,13 +909,16 @@ func processDynamicSecret(secret map[string]interface{}, envPrivKey, publicKey, 
 		}
 
 		result := SecretResult{
-			Key:          decKeyName,
-			Value:        value,
-			Path:         secretPath,
-			Application:  appName,
-			Environment:  envName,
-			IsDynamic:    true,
-			DynamicGroup: groupLabel,
+			Key:            decKeyName,
+			Value:          value,
+			Path:           secretPath,
+			Application:    appName,
+			Environment:    envName,
+			IsDynamic:      true,
+			DynamicGroup:   groupLabel,
+			LeaseID:        leaseID,
+			LeaseExpiresAt: leaseExpiresAt,
+			LeaseTTL:       leaseTTL,
 		}
 
 		if len(opts.Keys) > 0 {
