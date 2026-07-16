@@ -12,7 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.22', '1.23']
+        go-version: ['1.25', '1.26']
+    env:
+      # Fail loudly if go.mod ever requires a newer toolchain than the matrix
+      # provides, instead of silently auto-downloading it.
+      GOTOOLCHAIN: local
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
