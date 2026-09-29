@@ -248,39 +248,100 @@ func FetchAppKey(tokenType, appToken, host string) (string, error) {
 }
 
 func FetchPhaseSecrets(tokenType, appToken, environmentID, host, path, keyDigest string) ([]map[string]interface{}, error) {
-	client := getHTTPClient()
-	url := fmt.Sprintf("%s/service/secrets/", host)
+	return FetchPhaseSecretsWithQuery(tokenType, appToken, environmentID, host, SecretsQuery{Path: path, KeyDigest: keyDigest})
+}
 
-	req, err := http.NewRequest("GET", url, nil)
+// SecretsQuery holds the optional filters for fetching encrypted secrets from an environment.
+type SecretsQuery struct {
+	Path      string
+	KeyDigest string
+	Tags      []string // exact tag names; secrets carrying any of them are returned
+	Dynamic   bool
+	Lease     bool
+	LeaseTTL  *int
+}
+
+// FetchPhaseSecretsWithQuery fetches encrypted secrets for an environment, applying the given filters server-side.
+func FetchPhaseSecretsWithQuery(tokenType, appToken, environmentID, host string, q SecretsQuery) ([]map[string]interface{}, error) {
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/service/secrets/", host), nil)
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header = ConstructHTTPHeaders(tokenType, appToken)
 	req.Header.Set("Environment", environmentID)
-	if path != "" {
-		req.Header.Set("Path", path)
+	if q.Path != "" {
+		req.Header.Set("Path", q.Path)
 	}
-	if keyDigest != "" {
-		req.Header.Set("KeyDigest", keyDigest)
+	if q.KeyDigest != "" {
+		req.Header.Set("KeyDigest", q.KeyDigest)
+	}
+	if len(q.Tags) > 0 {
+		req.Header.Set("Tags", strings.Join(q.Tags, ","))
+	}
+	if q.Dynamic {
+		req.Header.Set("dynamic", "true")
+	}
+	if q.Lease {
+		req.Header.Set("lease", "true")
+	}
+	if q.LeaseTTL != nil {
+		req.Header.Set("lease-ttl", fmt.Sprintf("%d", *q.LeaseTTL))
 	}
 
-	resp, err := client.Do(req)
+	body, err := makeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	var secrets []map[string]interface{}
+	if err := json.Unmarshal(body, &secrets); err != nil {
+		return nil, fmt.Errorf("failed to decode secrets response: %w", err)
+	}
+	return secrets, nil
+}
+
+// PublicAPIRequest performs an authenticated JSON request against the Phase public REST API
+// ({host}/service/public/{path}). Any 2xx status is a success and the raw response body is
+// returned; other statuses are surfaced as the SDK's typed errors.
+func PublicAPIRequest(tokenType, appToken, host, method, path string, query url.Values, payload interface{}) ([]byte, error) {
+	reqURL := fmt.Sprintf("%s/service/public/%s", strings.TrimSuffix(host, "/"), strings.TrimPrefix(path, "/"))
+	if len(query) > 0 {
+		reqURL += "?" + query.Encode()
+	}
+
+	var body io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode request body: %w", err)
+		}
+		body = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequest(method, reqURL, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = ConstructHTTPHeaders(tokenType, appToken)
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := getHTTPClient().Do(req)
 	if err != nil {
 		return nil, wrapTransportError(err)
 	}
 	defer resp.Body.Close()
 
-	if err := handleHTTPResponse(resp); err != nil {
-		return nil, err
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
-
-	var secrets []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&secrets); err != nil {
-		return nil, fmt.Errorf("failed to decode JSON response: %v", err)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, formatHTTPError(resp.StatusCode, respBody, resp.Header)
 	}
-
-	return secrets, nil
+	return respBody, nil
 }
 
 func FetchPhaseSecret(tokenType, appToken, environmentID, host, keyDigest, path string) (map[string]interface{}, error) {
@@ -400,40 +461,13 @@ func DeletePhaseSecrets(tokenType, appToken, environmentID string, secretIDs []s
 }
 
 func FetchPhaseSecretsWithDynamic(tokenType, appToken, envID, host, path, keyDigest string, dynamic, lease bool, leaseTTL *int) ([]map[string]interface{}, error) {
-	reqURL := fmt.Sprintf("%s/service/secrets/", host)
-	req, err := http.NewRequest("GET", reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header = ConstructHTTPHeaders(tokenType, appToken)
-	req.Header.Set("Environment", envID)
-	if path != "" {
-		req.Header.Set("Path", path)
-	}
-	if keyDigest != "" {
-		req.Header.Set("KeyDigest", keyDigest)
-	}
-	if dynamic {
-		req.Header.Set("dynamic", "true")
-	}
-	if lease {
-		req.Header.Set("lease", "true")
-	}
-	if leaseTTL != nil {
-		req.Header.Set("lease-ttl", fmt.Sprintf("%d", *leaseTTL))
-	}
-
-	body, err := makeRequest(req)
-	if err != nil {
-		return nil, err
-	}
-
-	var secrets []map[string]interface{}
-	if err := json.Unmarshal(body, &secrets); err != nil {
-		return nil, fmt.Errorf("failed to decode secrets response: %w", err)
-	}
-	return secrets, nil
+	return FetchPhaseSecretsWithQuery(tokenType, appToken, envID, host, SecretsQuery{
+		Path:      path,
+		KeyDigest: keyDigest,
+		Dynamic:   dynamic,
+		Lease:     lease,
+		LeaseTTL:  leaseTTL,
+	})
 }
 
 func ListDynamicSecrets(tokenType, appToken, host, appID, env, path string) (json.RawMessage, error) {

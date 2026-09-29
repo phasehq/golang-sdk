@@ -9,8 +9,9 @@ import (
 	"strings"
 )
 
-// PhaseGetContext resolves app/env context with case-insensitive matching,
-// partial substring, shortest match wins. Returns 6 values:
+// PhaseGetContext resolves app/env context with case-insensitive matching. Apps match by
+// exact ID, else by substring with the shortest name winning; environments match by exact
+// name first, else by the first substring match. Returns 6 values:
 // appName, appID, envName, envID, identityKey, error.
 func PhaseGetContext(userData *AppKeyResponse, appName, envName, appID string) (string, string, string, string, string, error) {
 	if envName == "" {
@@ -50,7 +51,13 @@ func PhaseGetContext(userData *AppKeyResponse, appName, envName, appID string) (
 		return "", "", "", "", "", fmt.Errorf("no application context provided")
 	}
 
-	// Find the environment
+	// Find the environment: an exact (case-insensitive) name match wins over a partial match,
+	// so "staging" resolves to "Staging" even when "Staging-2" is listed first.
+	for _, envKey := range application.EnvironmentKeys {
+		if strings.EqualFold(envKey.Environment.Name, envName) {
+			return application.Name, application.ID, envKey.Environment.Name, envKey.Environment.ID, envKey.IdentityKey, nil
+		}
+	}
 	for _, envKey := range application.EnvironmentKeys {
 		if strings.Contains(strings.ToLower(envKey.Environment.Name), strings.ToLower(envName)) {
 			return application.Name, application.ID, envKey.Environment.Name, envKey.Environment.ID, envKey.IdentityKey, nil
