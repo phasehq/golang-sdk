@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,6 +135,7 @@ type mockPhaseServer struct {
 
 	secretsBody  string
 	mu           sync.Mutex
+	getHeaders   []http.Header
 	postPayloads []map[string]interface{}
 	putPayloads  []map[string]interface{}
 	deletedIDs   []string
@@ -164,6 +166,9 @@ func (ms *mockPhaseServer) handleSecrets(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	switch r.Method {
 	case http.MethodGet:
+		ms.mu.Lock()
+		ms.getHeaders = append(ms.getHeaders, r.Header.Clone())
+		ms.mu.Unlock()
 		fmt.Fprint(w, ms.secretsBody)
 	case http.MethodPost:
 		atomic.AddInt32(&ms.postCalls, 1)
@@ -465,6 +470,200 @@ func TestIntegrationUpdatePathScoped(t *testing.T) {
 	// Must be the /beta secret's ID, not /alpha's
 	if id, _ := sec["id"].(string); id != "b2a7f67f-3d59-4dd8-8462-4a7f17d63bd3" {
 		t.Errorf("expected /beta secret ID, got %q (wrong path matched)", id)
+	}
+}
+
+// TestIntegrationGetMetadata verifies that the server-side metadata needed by
+// state-tracking consumers (Terraform) is surfaced on SecretResult.
+func TestIntegrationGetMetadata(t *testing.T) {
+	srv := newMockPhaseServer()
+	defer srv.Close()
+	p := newTestClient(t, srv)
+
+	secrets, err := p.Get(GetOptions{AppName: "example-app", EnvName: "development", Raw: true})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	var first *SecretResult
+	for i := range secrets {
+		if secrets[i].ID == "fca7e863-85bc-4969-9db0-b5c678e4489e" {
+			first = &secrets[i]
+		}
+	}
+	if first == nil {
+		t.Fatalf("secret ID from fixture not surfaced; got %+v", secrets)
+	}
+	if first.Version != 1 {
+		t.Errorf("expected Version=1, got %d", first.Version)
+	}
+	if first.CreatedAt != "2025-09-25T07:48:21.865291Z" || first.UpdatedAt != "2025-09-25T07:48:21.865303Z" {
+		t.Errorf("timestamps not surfaced: created=%q updated=%q", first.CreatedAt, first.UpdatedAt)
+	}
+}
+
+// TestIntegrationGetTagsFilter verifies that exact tag names are sent to the server
+// as the Tags header, that the client-side exact filter is applied (so cached results
+// honour it), and that a secret returned once per matching tag is de-duplicated.
+func TestIntegrationGetTagsFilter(t *testing.T) {
+	// Tag the first fixture secret with "db" and return it twice, as the server does
+	// when a secret carries more than one matching tag. The second stays untagged.
+	tagged := strings.Replace(secretsFixture, `"tags": [],`, `"tags": ["db"],`, 1)
+	var rows []json.RawMessage
+	if err := json.Unmarshal([]byte(tagged), &rows); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	dup, _ := json.Marshal([]json.RawMessage{rows[0], rows[0], rows[1]})
+
+	srv := newMockPhaseServerWithFixture(string(dup))
+	defer srv.Close()
+	p := newTestClient(t, srv)
+
+	secrets, err := p.Get(GetOptions{AppName: "example-app", EnvName: "development", Tags: []string{"db", "api"}, Raw: true})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(secrets) != 1 || secrets[0].ID != "fca7e863-85bc-4969-9db0-b5c678e4489e" {
+		t.Fatalf("expected exactly the tagged secret once, got %+v", secrets)
+	}
+
+	srv.mu.Lock()
+	hdr := srv.getHeaders[len(srv.getHeaders)-1]
+	srv.mu.Unlock()
+	if got := hdr.Get("Tags"); got != "db,api" {
+		t.Errorf("expected Tags header db,api; got %q", got)
+	}
+}
+
+// TestIntegrationCreateWithCommentAndTags verifies comments are encrypted and tag
+// names are passed through on create.
+func TestIntegrationCreateWithCommentAndTags(t *testing.T) {
+	srv := newMockPhaseServer()
+	defer srv.Close()
+	p := newTestClient(t, srv)
+
+	err := p.Create(CreateOptions{
+		AppName:       "example-app",
+		EnvName:       "development",
+		KeyValuePairs: []KeyValuePair{{Key: "NEW_KEY", Value: "new_value", Comment: "managed by terraform", Tags: []string{"db", "api"}}},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	srv.mu.Lock()
+	payload := srv.postPayloads[0]
+	srv.mu.Unlock()
+
+	sec := payload["secrets"].([]interface{})[0].(map[string]interface{})
+	if c, _ := sec["comment"].(string); !strings.HasPrefix(c, "ph:v1:") {
+		t.Errorf("comment must be sent as Phase ciphertext, got %q", c)
+	}
+	if tags, _ := sec["tags"].([]interface{}); len(tags) != 2 || tags[0] != "db" || tags[1] != "api" {
+		t.Errorf("tags not passed through: %v", sec["tags"])
+	}
+}
+
+// TestIntegrationUpdateByID verifies ID-targeted updates: the key is left alone
+// unless a new one is given, and comment/tags are only touched when set.
+func TestIntegrationUpdateByID(t *testing.T) {
+	srv := newMockPhaseServer()
+	defer srv.Close()
+	p := newTestClient(t, srv)
+
+	const targetID = "b2a7f67f-3d59-4dd8-8462-4a7f17d63bd3"
+	comment := "rotated"
+	err := p.Update(UpdateOptions{
+		AppName: "example-app",
+		EnvName: "development",
+		ID:      targetID,
+		Value:   "updated_value",
+		Comment: &comment,
+		Tags:    []string{"x"},
+	})
+	if err != nil {
+		t.Fatalf("Update by ID: %v", err)
+	}
+
+	srv.mu.Lock()
+	sec := srv.putPayloads[0]["secrets"].([]interface{})[0].(map[string]interface{})
+	srv.mu.Unlock()
+
+	if id, _ := sec["id"].(string); id != targetID {
+		t.Errorf("PUT sent wrong secret ID: %q", id)
+	}
+	// The stored key ciphertext and digest are re-sent unchanged so the server's duplicate
+	// check (which only looks at entries carrying keyDigest) still guards path moves.
+	if k, _ := sec["key"].(string); k != "ph:v1:084a19c4c7a6b7581646467a0d793c7a3e6c23796b825737d7140861b261193e:d/bTNZvpipr86YXHbPVcMkIfpIzVAt9SsFl4vjqTgooD5IZ9ZbTuYMoGi1QBOmmpi6Z0LRuRuBsP5EjdsfHKUw==" {
+		t.Errorf("unchanged key must be re-sent as the stored ciphertext, got %q", k)
+	}
+	if d, _ := sec["keyDigest"].(string); d != "7ecc5e08ea64b9b898f275ca6b7b44b6b7da50923491e1d6f978adcde40420dc" {
+		t.Errorf("unchanged key must carry the stored digest, got %q", d)
+	}
+	if c, _ := sec["comment"].(string); !strings.HasPrefix(c, "ph:v1:") {
+		t.Errorf("comment must be re-encrypted, got %q", c)
+	}
+	if tags, _ := sec["tags"].([]interface{}); len(tags) != 1 || tags[0] != "x" {
+		t.Errorf("tags not replaced: %v", sec["tags"])
+	}
+
+	// Renaming by ID sends a fresh key and digest, and an unknown ID is a typed not-found.
+	if err := p.Update(UpdateOptions{AppName: "example-app", EnvName: "development", ID: targetID, Key: "RENAMED"}); err != nil {
+		t.Fatalf("Update rename: %v", err)
+	}
+	srv.mu.Lock()
+	renamed := srv.putPayloads[1]["secrets"].([]interface{})[0].(map[string]interface{})
+	srv.mu.Unlock()
+	if k, _ := renamed["key"].(string); !strings.HasPrefix(k, "ph:v1:") {
+		t.Errorf("renamed key must be ciphertext, got %q", k)
+	}
+	if d, _ := renamed["keyDigest"].(string); len(d) != 64 {
+		t.Errorf("renamed key must carry a digest, got %q", d)
+	}
+	if v, _ := renamed["value"].(string); v != "ph:v1:83105db4144674fbda57e41d572e949d00e5fddda4962924d814d99f6f7be642:8joUdNCOQ/VsJ66ZBU1B7hgx6LqVfCkJ1va8I58ZYGz/ihMz2bnDGLmvmTrxPbB5lNUU0NFv4LsZg32B" {
+		t.Errorf("existing value must be preserved on rename, got %q", v)
+	}
+
+	err = p.Update(UpdateOptions{AppName: "example-app", EnvName: "development", ID: "00000000-0000-0000-0000-000000000000", Value: "x"})
+	var notFound *ErrSecretNotFound
+	if !errors.As(err, &notFound) || notFound.Key != "00000000-0000-0000-0000-000000000000" {
+		t.Errorf("expected ErrSecretNotFound carrying the ID, got %v", err)
+	}
+
+	// An empty value is only written when explicitly allowed; otherwise the stored ciphertext is kept.
+	if err := p.Update(UpdateOptions{AppName: "example-app", EnvName: "development", ID: targetID, Value: "", AllowEmptyValue: true}); err != nil {
+		t.Fatalf("Update empty value: %v", err)
+	}
+	srv.mu.Lock()
+	emptied := srv.putPayloads[2]["secrets"].([]interface{})[0].(map[string]interface{})
+	srv.mu.Unlock()
+	if v, _ := emptied["value"].(string); v == "" || v == "ph:v1:83105db4144674fbda57e41d572e949d00e5fddda4962924d814d99f6f7be642:8joUdNCOQ/VsJ66ZBU1B7hgx6LqVfCkJ1va8I58ZYGz/ihMz2bnDGLmvmTrxPbB5lNUU0NFv4LsZg32B" {
+		t.Errorf("AllowEmptyValue must send a freshly encrypted empty value, got %q", v)
+	}
+}
+
+// TestIntegrationDeleteByID verifies that ID-targeted deletes go straight to the server
+// without fetching or decrypting the environment's secrets.
+func TestIntegrationDeleteByID(t *testing.T) {
+	srv := newMockPhaseServer()
+	defer srv.Close()
+	p := newTestClient(t, srv)
+
+	keysNotFound, err := p.Delete(DeleteOptions{AppName: "example-app", EnvName: "development", IDs: []string{"b2a7f67f-3d59-4dd8-8462-4a7f17d63bd3"}})
+	if err != nil {
+		t.Fatalf("Delete by ID: %v", err)
+	}
+	if len(keysNotFound) != 0 {
+		t.Errorf("expected no keys-not-found, got %v", keysNotFound)
+	}
+	srv.mu.Lock()
+	ids := srv.deletedIDs
+	gets := len(srv.getHeaders)
+	srv.mu.Unlock()
+	if len(ids) != 1 || ids[0] != "b2a7f67f-3d59-4dd8-8462-4a7f17d63bd3" {
+		t.Errorf("DELETE sent wrong IDs: %v", ids)
+	}
+	if gets != 0 {
+		t.Errorf("deleting by ID must not fetch secrets, saw %d GET(s)", gets)
 	}
 }
 

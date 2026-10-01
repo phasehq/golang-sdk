@@ -45,8 +45,8 @@ import (
 )
 
 func main() {
-    // Accepts service tokens (pss_service:v1/v2) and user tokens (pss_user:v1)
-    token := "pss_service:v1:....."
+    // Accepts service account tokens (pss_service:v2) and user tokens (pss_user:v1)
+    token := "pss_service:v2:....."
     host := "https://console.phase.dev" // Change for self-hosted instances
     debug := false
 
@@ -77,7 +77,7 @@ func main() {
 ```go
 err := p.Create(phase.CreateOptions{
     KeyValuePairs: []phase.KeyValuePair{
-        {Key: "API_KEY", Value: "my_api_secret"},
+        {Key: "API_KEY", Value: "my_api_secret", Comment: "Rotated monthly", Tags: []string{"backend"}},
         {Key: "DB_HOST", Value: "localhost:5432"},
     },
     EnvName: "Production",
@@ -85,6 +85,8 @@ err := p.Create(phase.CreateOptions{
     Path:    "/api/config", // Optional, defaults to /
 })
 ```
+
+`Comment` and `Tags` are optional; tags that do not exist yet are created.
 
 ### Getting Secrets
 
@@ -106,8 +108,15 @@ secrets, err := p.Get(phase.GetOptions{
 secrets, err := p.Get(phase.GetOptions{
     EnvName: "Production",
     AppName: "MyApp",
-    Tag:     "backend",
+    Tag:     "backend", // partial, case-insensitive match
     Path:    "/api/config",
+})
+
+// Filter by exact tag names (secrets carrying any of them are returned)
+secrets, err := p.Get(phase.GetOptions{
+    EnvName: "Production",
+    AppName: "MyApp",
+    Tags:    []string{"backend", "database"},
 })
 
 // Include dynamic secrets with leases
@@ -128,23 +137,41 @@ type SecretResult struct {
     Value        string
     Comment      string
     Path         string
+    Type         string       // secret, sealed or config
+    Lifecycle    string       // static or rotating
     Application  string
     Environment  string
     Tags         []string
     Overridden   bool         // true if a personal override is active
     IsDynamic    bool         // true for dynamic secrets
     DynamicGroup string       // provider group label for dynamic secrets
+    ID           string       // server-side identifier
+    Version      int
+    CreatedAt    string
+    UpdatedAt    string
 }
 ```
 
 ### Updating a Secret
 
 ```go
-result, err := p.Update(phase.UpdateOptions{
+err := p.Update(phase.UpdateOptions{
     EnvName: "Production",
     AppName: "MyApp",
     Key:     "API_KEY",
     Value:   "my_updated_api_secret",
+})
+
+// Target a secret by ID (from SecretResult.ID) to rename it or change its comment and tags.
+// Comment and Tags are only touched when set; an empty comment or an empty slice clears them.
+comment := "Rotated monthly"
+err = p.Update(phase.UpdateOptions{
+    EnvName: "Production",
+    AppName: "MyApp",
+    ID:      "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    Key:     "API_KEY_V2", // new key name, leave empty to keep the current key
+    Comment: &comment,
+    Tags:    []string{"backend"},
 })
 ```
 
@@ -211,7 +238,7 @@ err := p.Create(phase.CreateOptions{
 })
 
 // Update override for existing secret
-_, err := p.Update(phase.UpdateOptions{
+err = p.Update(phase.UpdateOptions{
     EnvName:  "Development",
     AppName:  "MyApp",
     Key:      "API_URL",
@@ -220,13 +247,52 @@ _, err := p.Update(phase.UpdateOptions{
 })
 
 // Toggle override on/off
-_, err := p.Update(phase.UpdateOptions{
+err = p.Update(phase.UpdateOptions{
     EnvName:        "Development",
     AppName:        "MyApp",
     Key:            "API_URL",
     ToggleOverride: true,
 })
 ```
+
+## Management API
+
+Apps, environments, roles, members, invites and service accounts are managed through the
+Phase REST API with the same token. These calls exchange plain JSON: the server handles key
+wrapping, so apps created this way use server-side encryption (SSE), which the environment
+and access methods require. A `pss_service:v2` or `pss_user` token is needed.
+
+```go
+// Apps and environments
+app, err := p.CreateApp(phase.CreateAppOptions{Name: "backend"}) // Development, Staging, Production
+apps, err := p.ListApps()
+env, err := p.CreateEnvironment(app.ID, "qa") // paid plans
+envs, err := p.ListEnvironments(app.ID)
+err = p.DeleteApp(app.ID)
+
+// Service accounts, access and tokens
+roles, err := p.ListRoles()
+sa, err := p.CreateServiceAccount(phase.CreateServiceAccountOptions{Name: "ci", RoleID: roles[0].ID})
+fmt.Println(sa.InitialToken.Token) // full pss_service:v2 token, returned only once
+_, err = p.SetServiceAccountAccess(sa.ID, []phase.AppAccessInput{{ID: app.ID, EnvironmentIDs: []string{envs[0].ID}}})
+token, err := p.CreateServiceAccountToken(sa.ID, phase.CreateServiceAccountTokenOptions{Name: "deploy", ExpiresIn: 86400})
+err = p.DeleteServiceAccountToken(sa.ID, token.ID)
+
+// Members and invites
+invite, err := p.CreateInvite(phase.CreateInviteOptions{Email: "dev@example.com", RoleID: roles[0].ID})
+members, err := p.ListMembers()
+_, err = p.SetMemberAccess(members[0].ID, []phase.AppAccessInput{{ID: app.ID, EnvironmentIDs: []string{envs[0].ID}}})
+```
+
+Errors are the same typed errors as the secret methods: a missing resource is a
+`*network.APIError` with `StatusCode == 404`, and a permission or plan restriction is a
+`*network.AuthorizationError`. Every app and environment method except `ListApps` requires
+server-side encryption on the app (check `App.SSEEnabled`). Role create/update/delete and
+the Teams API are not wrapped yet.
+
+Since 2.5.0, `AppName`/`EnvName` lookups prefer an exact (case-insensitive) environment name
+over a partial match, so `EnvName: "staging"` resolves to `Staging` even when `Staging-2`
+is listed first.
 
 For more information, see the [Phase Docs](https://docs.phase.dev/sdks/go).
 

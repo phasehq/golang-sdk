@@ -89,13 +89,19 @@ type SecretResult struct {
 	Overridden   bool     `json:"overridden"`
 	IsDynamic    bool     `json:"is_dynamic,omitempty"`
 	DynamicGroup string   `json:"dynamic_group,omitempty"`
+	ID           string   `json:"id,omitempty"`
+	Version      int      `json:"version,omitempty"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	UpdatedAt    string   `json:"updated_at,omitempty"`
 }
 
 // KeyValuePair represents a key-value pair for secret creation
 type KeyValuePair struct {
-	Key   string
-	Value string
-	Type  string
+	Key     string
+	Value   string
+	Type    string
+	Comment string
+	Tags    []string // tag names; tags that do not exist yet are created
 }
 
 // GET SECRETS
@@ -104,7 +110,8 @@ type GetOptions struct {
 	AppName                        string
 	AppID                          string
 	Keys                           []string
-	Tag                            string
+	Tag                            string   // partial, case-insensitive match against any tag (client-side)
+	Tags                           []string // exact tag names; secrets carrying any of them are returned (server-side)
 	Path                           string
 	Dynamic                        bool
 	Lease                          bool
@@ -129,6 +136,7 @@ type UpdateOptions struct {
 	EnvName         string
 	AppName         string
 	AppID           string
+	ID              string // when set, the secret is matched by ID and Key (if non-empty) becomes its new key
 	Key             string
 	Value           string
 	SourcePath      string
@@ -136,6 +144,9 @@ type UpdateOptions struct {
 	Override        bool
 	ToggleOverride  bool
 	Type            string
+	Comment         *string  // nil leaves the comment unchanged; an empty string clears it
+	Tags            []string // nil leaves the tags unchanged; an empty slice clears them
+	AllowEmptyValue bool     // when true an empty Value is written as an empty secret instead of keeping the current value
 }
 
 // DELETE SECRETS
@@ -145,6 +156,7 @@ type DeleteOptions struct {
 	AppID        string
 	KeysToDelete []string
 	Path         string
+	IDs          []string // secret IDs to delete directly, without looking them up by key
 }
 
 // Create a new Phase instance from a token (service or user), host, and debug flag
@@ -360,18 +372,28 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 			return nil, fmt.Errorf("offline mode: failed to decode cached secrets: %w", err)
 		}
 	} else {
-		var fetchErr error
-		if opts.Dynamic {
-			secrets, fetchErr = network.FetchPhaseSecretsWithDynamic(p.TokenType, p.AppToken, envID, p.Host, opts.Path, keyDigest, true, opts.Lease, opts.LeaseTTL)
-		} else {
-			secrets, fetchErr = network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path, keyDigest)
+		// Tag names with commas or non-ASCII characters cannot travel in the Tags header;
+		// they are filtered client-side below instead.
+		serverTags := opts.Tags
+		if !tagsHeaderSafe(serverTags) {
+			serverTags = nil
 		}
+
+		var fetchErr error
+		secrets, fetchErr = network.FetchPhaseSecretsWithQuery(p.TokenType, p.AppToken, envID, p.Host, network.SecretsQuery{
+			Path:      opts.Path,
+			KeyDigest: keyDigest,
+			Tags:      serverTags,
+			Dynamic:   opts.Dynamic,
+			Lease:     opts.Dynamic && opts.Lease,
+			LeaseTTL:  opts.LeaseTTL,
+		})
 		if fetchErr != nil {
 			return nil, fmt.Errorf("failed to fetch secrets: %w", fetchErr)
 		}
-		// Only cache full-env fetches — single-key fetches (keyDigest != "") return
+		// Only cache full-env fetches — single-key and tag-filtered fetches return
 		// a subset and would overwrite the complete cache file.
-		if cfg != nil && keyDigest == "" {
+		if cfg != nil && keyDigest == "" && len(serverTags) == 0 {
 			if data, err := json.Marshal(secrets); err == nil {
 				_ = cacheWrite(secretsCachePath(cfg.CacheDir, envName, appName, opts.AppID, opts.Path), data)
 			}
@@ -380,10 +402,22 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 
 	// --- Step 4: Decrypt secrets (shared path for online and offline) ---
 	var results []SecretResult
+	seenIDs := map[string]bool{}
 	for _, secret := range secrets {
-		// Handle dynamic secrets
+		// A tag filter can return the same secret once per matching tag; keep the first copy.
+		if secretID, _ := secret["id"].(string); secretID != "" {
+			if seenIDs[secretID] {
+				continue
+			}
+			seenIDs[secretID] = true
+		}
+
+		// Handle dynamic secrets (they carry no tags, so an exact tag filter excludes them)
 		secretType, _ := secret["type"].(string)
 		if secretType == "dynamic" {
+			if len(opts.Tags) > 0 {
+				continue
+			}
 			if offline {
 				name, _ := secret["name"].(string)
 				if name == "" {
@@ -397,12 +431,15 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 			continue
 		}
 
-		// Check tag filter
+		// Check tag filters (the exact filter is also applied here so cached results honour it)
 		if opts.Tag != "" {
 			secretTags := misc.ExtractStringSlice(secret, "tags")
 			if !misc.TagMatches(secretTags, opts.Tag) {
 				continue
 			}
+		}
+		if len(opts.Tags) > 0 && !hasAnyTag(misc.ExtractStringSlice(secret, "tags"), opts.Tags) {
+			continue
 		}
 
 		// Determine if override is active
@@ -457,6 +494,11 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 			lifecycle = SecretLifecycleStatic
 		}
 
+		secretID, _ := secret["id"].(string)
+		version, _ := secret["version"].(float64)
+		createdAt, _ := secret["created_at"].(string)
+		updatedAt, _ := secret["updated_at"].(string)
+
 		result := SecretResult{
 			Key:         decryptedKey,
 			Value:       decryptedValue,
@@ -468,6 +510,10 @@ func (p *Phase) fetchSecrets(opts GetOptions) ([]SecretResult, error) {
 			Lifecycle:   lifecycle,
 			Application: appName,
 			Environment: envName,
+			ID:          secretID,
+			Version:     int(version),
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
 		}
 
 		// Filter by keys if specified
@@ -543,13 +589,26 @@ func (p *Phase) Create(opts CreateOptions) error {
 			return fmt.Errorf("failed to generate key digest: %w", err)
 		}
 
+		encryptedComment := ""
+		if pair.Comment != "" {
+			encryptedComment, err = crypto.EncryptAsymmetric(pair.Comment, publicKey)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt comment: %w", err)
+			}
+		}
+
+		tags := pair.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+
 		secret := map[string]interface{}{
 			"key":       encryptedKey,
 			"keyDigest": keyDigest,
 			"value":     encryptedValue,
 			"path":      path,
-			"tags":      []string{},
-			"comment":   "",
+			"tags":      tags,
+			"comment":   encryptedComment,
 		}
 
 		// Set secret type: per-pair type takes precedence, then option-level type
@@ -622,9 +681,17 @@ func (p *Phase) Update(opts UpdateOptions) error {
 		return fmt.Errorf("failed to generate env key pair: %w", err)
 	}
 
-	// Find matching secret, filtering by source path when specified.
+	// Find matching secret: by ID when given, otherwise by decrypted key
+	// (filtering by source path when specified).
 	var matchingSecret map[string]interface{}
 	for _, secret := range secrets {
+		if opts.ID != "" {
+			if id, _ := secret["id"].(string); id == opts.ID {
+				matchingSecret = secret
+				break
+			}
+			continue
+		}
 		if sourcePath != "" {
 			secretPath, _ := secret["path"].(string)
 			if secretPath != sourcePath {
@@ -643,35 +710,31 @@ func (p *Phase) Update(opts UpdateOptions) error {
 	}
 
 	if matchingSecret == nil {
-		return &ErrSecretNotFound{Key: opts.Key, Path: sourcePath}
+		notFound := opts.Key
+		if opts.ID != "" {
+			notFound = opts.ID
+		}
+		return &ErrSecretNotFound{Key: notFound, Path: sourcePath}
 	}
 
-	// Encrypt key
-	encryptedKey, err := crypto.EncryptAsymmetric(opts.Key, publicKey)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt key: %w", err)
+	// Encrypt key — when matching by ID an empty Key keeps the existing key
+	encryptedKey := ""
+	if opts.Key != "" {
+		encryptedKey, err = crypto.EncryptAsymmetric(opts.Key, publicKey)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt key: %w", err)
+		}
 	}
 
 	// Encrypt value — if no new value provided, reuse existing encrypted value
 	var encryptedValue string
-	if opts.Value != "" {
+	if opts.Value != "" || opts.AllowEmptyValue {
 		encryptedValue, err = crypto.EncryptAsymmetric(opts.Value, publicKey)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt value: %w", err)
 		}
 	} else {
 		encryptedValue, _ = matchingSecret["value"].(string)
-	}
-
-	// Get key digest
-	decryptedSalt, err := p.Decrypt(envKey.WrappedSalt, userData.WrappedKeyShare)
-	if err != nil {
-		return fmt.Errorf("failed to decrypt wrapped salt: %w", err)
-	}
-
-	keyDigest, err := crypto.Blake2bDigest(opts.Key, decryptedSalt)
-	if err != nil {
-		return fmt.Errorf("failed to generate key digest: %w", err)
 	}
 
 	// Determine payload value
@@ -686,15 +749,50 @@ func (p *Phase) Update(opts UpdateOptions) error {
 		path = opts.DestinationPath
 	}
 
+	// Comment: nil keeps the existing ciphertext, otherwise re-encrypt the new value
+	comment := matchingSecret["comment"]
+	if opts.Comment != nil {
+		comment = ""
+		if *opts.Comment != "" {
+			comment, err = crypto.EncryptAsymmetric(*opts.Comment, publicKey)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt comment: %w", err)
+			}
+		}
+	}
+
+	// Tags: nil keeps the existing tags
+	tags := matchingSecret["tags"]
+	if opts.Tags != nil {
+		tags = opts.Tags
+	}
+
 	secretID, _ := matchingSecret["id"].(string)
 	payload := map[string]interface{}{
-		"id":        secretID,
-		"key":       encryptedKey,
-		"keyDigest": keyDigest,
-		"value":     payloadValue,
-		"tags":      matchingSecret["tags"],
-		"comment":   matchingSecret["comment"],
-		"path":      path,
+		"id":      secretID,
+		"value":   payloadValue,
+		"tags":    tags,
+		"comment": comment,
+		"path":    path,
+	}
+
+	// The key and its digest are always sent: a freshly encrypted key when renaming, otherwise
+	// the stored ciphertext, so the server's duplicate check still applies when a secret moves path.
+	if opts.Key != "" {
+		decryptedSalt, err := p.Decrypt(envKey.WrappedSalt, userData.WrappedKeyShare)
+		if err != nil {
+			return fmt.Errorf("failed to decrypt wrapped salt: %w", err)
+		}
+
+		keyDigest, err := crypto.Blake2bDigest(opts.Key, decryptedSalt)
+		if err != nil {
+			return fmt.Errorf("failed to generate key digest: %w", err)
+		}
+		payload["key"] = encryptedKey
+		payload["keyDigest"] = keyDigest
+	} else {
+		payload["key"] = matchingSecret["key"]
+		payload["keyDigest"] = matchingSecret["key_digest"]
 	}
 
 	// Set secret type if specified
@@ -706,7 +804,11 @@ func (p *Phase) Update(opts UpdateOptions) error {
 	if opts.ToggleOverride {
 		override, hasOverride := matchingSecret["override"].(map[string]interface{})
 		if !hasOverride || override == nil {
-			return fmt.Errorf("no override found for key '%s'. Create one first with --override", opts.Key)
+			target := opts.Key
+			if target == "" {
+				target = opts.ID
+			}
+			return fmt.Errorf("no override found for key '%s'. Create one first with --override", target)
 		}
 		currentState := misc.GetBool(override, "is_active")
 		payload["override"] = map[string]interface{}{
@@ -766,25 +868,30 @@ func (p *Phase) Delete(opts DeleteOptions) ([]string, error) {
 		return nil, fmt.Errorf("no environment found with id: %s", envID)
 	}
 
-	// Decrypt seed to get env keypair
-	decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userData.WrappedKeyShare)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt wrapped seed: %w", err)
-	}
-
-	_, envPrivKey, err := crypto.GenerateEnvKeyPair(decryptedSeed)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate env key pair: %w", err)
-	}
-
-	// Fetch secrets
-	secrets, err := network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch secrets: %w", err)
-	}
-
-	var idsToDelete []string
+	idsToDelete := append([]string{}, opts.IDs...)
 	var keysNotFound []string
+
+	// Resolving keys needs the env private key and the encrypted secrets; IDs do not.
+	var envPrivKey string
+	var secrets []map[string]interface{}
+	if len(opts.KeysToDelete) > 0 {
+		// Decrypt seed to get env keypair
+		decryptedSeed, err := p.Decrypt(envKey.WrappedSeed, userData.WrappedKeyShare)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt wrapped seed: %w", err)
+		}
+
+		_, envPrivKey, err = crypto.GenerateEnvKeyPair(decryptedSeed)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate env key pair: %w", err)
+		}
+
+		// Fetch secrets
+		secrets, err = network.FetchPhaseSecrets(p.TokenType, p.AppToken, envID, p.Host, opts.Path, "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch secrets: %w", err)
+		}
+	}
 
 	for _, key := range opts.KeysToDelete {
 		found := false
@@ -819,6 +926,33 @@ func (p *Phase) Delete(opts DeleteOptions) ([]string, error) {
 	}
 
 	return keysNotFound, nil
+}
+
+// tagsHeaderSafe reports whether every tag name can be sent verbatim in the comma-separated Tags header.
+func tagsHeaderSafe(tags []string) bool {
+	for _, t := range tags {
+		if strings.Contains(t, ",") {
+			return false
+		}
+		for i := 0; i < len(t); i++ {
+			if t[i] < 0x20 || t[i] > 0x7e {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// hasAnyTag reports whether any of the wanted tag names is present in secretTags (exact match).
+func hasAnyTag(secretTags, wanted []string) bool {
+	for _, w := range wanted {
+		for _, t := range secretTags {
+			if t == w {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Handle dynamic secrets inside of a given environment
