@@ -93,9 +93,10 @@ type SecretResult struct {
 
 // KeyValuePair represents a key-value pair for secret creation
 type KeyValuePair struct {
-	Key   string
-	Value string
-	Type  string
+	Key     string
+	Value   string
+	Type    string
+	Comment string
 }
 
 // GET SECRETS
@@ -136,6 +137,9 @@ type UpdateOptions struct {
 	Override        bool
 	ToggleOverride  bool
 	Type            string
+	// Comment replaces the secret's comment when non-nil; an empty string clears it.
+	// When nil, the existing comment is kept.
+	Comment *string
 }
 
 // DELETE SECRETS
@@ -543,13 +547,21 @@ func (p *Phase) Create(opts CreateOptions) error {
 			return fmt.Errorf("failed to generate key digest: %w", err)
 		}
 
+		encryptedComment := ""
+		if pair.Comment != "" {
+			encryptedComment, err = crypto.EncryptAsymmetric(pair.Comment, publicKey)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt comment: %w", err)
+			}
+		}
+
 		secret := map[string]interface{}{
 			"key":       encryptedKey,
 			"keyDigest": keyDigest,
 			"value":     encryptedValue,
 			"path":      path,
 			"tags":      []string{},
-			"comment":   "",
+			"comment":   encryptedComment,
 		}
 
 		// Set secret type: per-pair type takes precedence, then option-level type
@@ -686,6 +698,18 @@ func (p *Phase) Update(opts UpdateOptions) error {
 		path = opts.DestinationPath
 	}
 
+	// Comment: keep the existing (already encrypted) one unless a new one is given
+	comment := matchingSecret["comment"]
+	if opts.Comment != nil {
+		comment = ""
+		if *opts.Comment != "" {
+			comment, err = crypto.EncryptAsymmetric(*opts.Comment, publicKey)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt comment: %w", err)
+			}
+		}
+	}
+
 	secretID, _ := matchingSecret["id"].(string)
 	payload := map[string]interface{}{
 		"id":        secretID,
@@ -693,7 +717,7 @@ func (p *Phase) Update(opts UpdateOptions) error {
 		"keyDigest": keyDigest,
 		"value":     payloadValue,
 		"tags":      matchingSecret["tags"],
-		"comment":   matchingSecret["comment"],
+		"comment":   comment,
 		"path":      path,
 	}
 

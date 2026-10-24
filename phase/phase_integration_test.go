@@ -498,3 +498,81 @@ func TestGetConcurrentRaceFree(t *testing.T) {
 		}
 	}
 }
+
+func TestIntegrationCreateWithComment(t *testing.T) {
+	srv := newMockPhaseServer()
+	defer srv.Close()
+	p := newTestClient(t, srv)
+
+	err := p.Create(CreateOptions{
+		AppName:       "example-app",
+		EnvName:       "development",
+		KeyValuePairs: []KeyValuePair{{Key: "NEW_KEY", Value: "new_value", Comment: "rotated quarterly"}},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	srv.mu.Lock()
+	payload := srv.postPayloads[0]
+	srv.mu.Unlock()
+
+	sec := payload["secrets"].([]interface{})[0].(map[string]interface{})
+	if c, _ := sec["comment"].(string); len(c) < 5 || c[:3] != "ph:" {
+		t.Errorf("comment is not a Phase ciphertext: %q", sec["comment"])
+	}
+}
+
+func TestIntegrationUpdateComment(t *testing.T) {
+	all := func(t *testing.T, p *Phase) string {
+		t.Helper()
+		secrets, err := p.Get(GetOptions{AppName: "example-app", EnvName: "development"})
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		return secrets[0].Key
+	}
+	putComment := func(t *testing.T, comment *string) interface{} {
+		t.Helper()
+		srv := newMockPhaseServer()
+		defer srv.Close()
+		p := newTestClient(t, srv)
+		err := p.Update(UpdateOptions{
+			AppName: "example-app",
+			EnvName: "development",
+			Key:     all(t, p),
+			Comment: comment,
+		})
+		if err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		return srv.putPayloads[0]["secrets"].([]interface{})[0].(map[string]interface{})["comment"]
+	}
+
+	t.Run("sets an encrypted comment", func(t *testing.T) {
+		c := "owned by the billing team"
+		got, _ := putComment(t, &c).(string)
+		if len(got) < 5 || got[:3] != "ph:" {
+			t.Errorf("comment is not a Phase ciphertext: %q", got)
+		}
+	})
+
+	t.Run("keeps the existing comment when nil", func(t *testing.T) {
+		var fixture []map[string]interface{}
+		if err := json.Unmarshal([]byte(secretsFixture), &fixture); err != nil {
+			t.Fatalf("fixture: %v", err)
+		}
+		if got := putComment(t, nil); got != fixture[0]["comment"] {
+			t.Errorf("comment changed without Comment set: got %v, want %v", got, fixture[0]["comment"])
+		}
+	})
+
+	t.Run("clears the comment with an empty string", func(t *testing.T) {
+		empty := ""
+		if got := putComment(t, &empty); got != "" {
+			t.Errorf("expected cleared comment, got %v", got)
+		}
+	})
+}
